@@ -1192,16 +1192,52 @@ async def rename_inline_button(menu_id: str, button_to_rename: dict, new_name: s
         print(f"Error renaming inline button: {e}")
         return False
 
+def find_static_menu_by_label(label, structure=None, parent_path=""):
+    """Рекурсивно ищет меню по label в MENU_STRUCTURE"""
+    if structure is None:
+        structure = MENU_STRUCTURE
+
+    for menu_id, menu_data in structure.items():
+        current_path = f"{parent_path}:{menu_id}" if parent_path else menu_id
+
+        if menu_data.get('label') == label:
+            return {
+                'menu_id': menu_id,
+                'menu_data': menu_data,
+                'path': current_path
+            }
+
+        # Рекурсивно ищем в подменю
+        if 'submenu' in menu_data:
+            result = find_static_menu_by_label(label, menu_data['submenu'], current_path)
+            if result:
+                return result
+
+    return None
+
 @router.message(F.text == "✏️ Редактор контента")
 async def content_editor_start(message: types.Message, state: FSMContext):
-    """Главное меню редактора контента - показываем только кнопки клавиатуры"""
+    """Главное меню редактора контента - показываем статические кнопки и кнопки из БД"""
     if message.from_user.id != ADMIN_ID:
         return
+
+    # Формируем список кнопок для выбора
+    kb = []
+
+    # Добавляем статические кнопки из MENU_STRUCTURE
+    for menu_id, menu_data in MENU_STRUCTURE.items():
+        label = menu_data.get('label', menu_id)
+        kb.append([KeyboardButton(text=f"📝 {label}")])
 
     # Получаем кнопки клавиатуры из БД
     keyboard_buttons = await get_all_keyboard_buttons()
 
-    if not keyboard_buttons:
+    # Добавляем кнопки из БД
+    for btn in keyboard_buttons:
+        label = btn.get('label', 'Без названия')
+        kb.append([KeyboardButton(text=f"📝 {label}")])
+
+    if not kb:
         await message.answer(
             "📋 <b>Редактор контента</b>\n\n"
             "Нет кнопок для редактирования.\n"
@@ -1209,12 +1245,6 @@ async def content_editor_start(message: types.Message, state: FSMContext):
             parse_mode=ParseMode.HTML
         )
         return
-
-    # Формируем список кнопок для выбора
-    kb = []
-    for btn in keyboard_buttons:
-        label = btn.get('label', 'Без названия')
-        kb.append([KeyboardButton(text=f"📝 {label}")])
 
     kb.append([KeyboardButton(text="⬅️ Назад")])
 
@@ -1233,48 +1263,109 @@ async def content_editor_select(message: types.Message, state: FSMContext):
 
     await state.update_data(editing_button_label=button_label)
 
-    # Получаем контент кнопки из БД
+    # Сначала проверяем БД
     db_content = await get_button_content(button_label)
 
+    # Если не нашли в БД, ищем в статических кнопках
     if not db_content:
-        await message.answer("❌ Контент для этой кнопки не найден в БД")
-        return await content_editor_start(message, state)
+        # Ищем меню по label в MENU_STRUCTURE (рекурсивно)
+        static_menu_info = find_static_menu_by_label(button_label)
 
-    current_text = db_content.get('content', 'Нет текста')
-    has_photo = "✅" if db_content.get('photo_file_id') else "❌"
+        if not static_menu_info:
+            await message.answer("❌ Контент для этой кнопки не найден")
+            return await content_editor_start(message, state)
 
-    # Получаем инлайн-кнопки
-    inline_buttons_info = ""
-    all_buttons = []
-    if db_content.get('buttons_json'):
-        try:
-            buttons = json.loads(db_content['buttons_json'])
-            inline_buttons_info = "\n\n📋 <b>Инлайн-кнопки:</b>\n"
-            for idx, btn in enumerate(buttons, 1):
-                if btn.get('url'):
-                    inline_buttons_info += f"{idx}. {btn['text']} → 🔗 URL\n"
-                    inline_buttons_info += f"   <code>{btn['url']}</code>\n"
+        static_menu_id = static_menu_info['menu_id']
+        static_menu_data = static_menu_info['menu_data']
+        static_path = static_menu_info['path']
+
+        # Используем статическое меню
+        await state.update_data(editing_menu_id=static_menu_id, is_static_menu=True, static_menu_path=static_path)
+
+        # Проверяем, есть ли text или pages
+        if 'pages' in static_menu_data and static_menu_data['pages']:
+            # Если есть страницы, показываем первую
+            current_text = static_menu_data['pages'][0].get('text', 'Нет текста')
+            current_text += f"\n\n<i>(Меню с {len(static_menu_data['pages'])} страницами)</i>"
+        else:
+            current_text = static_menu_data.get('text', 'Нет текста')
+
+        has_photo = "❌"  # Статические меню не имеют фото
+
+        # Получаем инлайн-кнопки из статического меню
+        all_buttons = []
+        idx = 1
+
+        # Кнопки из submenu
+        if static_menu_data.get('type') == 'inline' and static_menu_data.get('submenu'):
+            for submenu_id, submenu_data in static_menu_data['submenu'].items():
+                all_buttons.append({
+                    'index': idx,
+                    'text': submenu_data.get('label', submenu_id),
+                    'type': '📄 меню',
+                    'source': 'static',
+                    'id': submenu_id,
+                    'menu_path': f"{static_path}:{submenu_id}"
+                })
+                idx += 1
+
+        # Кнопки из buttons массива
+        if 'buttons' in static_menu_data:
+            for btn in static_menu_data['buttons']:
+                btn_text = btn.get('text', 'Кнопка')
+                if btn.get('callback'):
+                    # Это callback кнопка (навигация)
                     all_buttons.append({
                         'index': idx,
-                        'text': btn['text'],
+                        'text': btn_text,
+                        'type': '📄 меню',
+                        'source': 'static',
+                        'callback': btn['callback']
+                    })
+                elif btn.get('url'):
+                    # Это URL кнопка
+                    all_buttons.append({
+                        'index': idx,
+                        'text': btn_text,
                         'type': '🔗 URL',
-                        'source': 'db',
+                        'source': 'static',
                         'url': btn['url']
                     })
-                else:
-                    submenu_id = btn.get('id', f"{button_label}:{btn['text']}")
-                    inline_buttons_info += f"{idx}. {btn['text']} → 📄 меню\n"
-                    inline_buttons_info += f"   <code>GOTO:db:{submenu_id}</code>\n"
-                    all_buttons.append({
-                        'index': idx,
-                        'text': btn['text'],
-                        'type': '📄 меню',
-                        'source': 'db',
-                        'goto': f"db:{submenu_id}",
-                        'id': submenu_id
-                    })
-        except:
-            pass
+                idx += 1
+
+    else:
+        # Используем БД контент
+        await state.update_data(is_static_menu=False)
+
+        current_text = db_content.get('content', 'Нет текста')
+        has_photo = "✅" if db_content.get('photo_file_id') else "❌"
+
+        # Получаем инлайн-кнопки из БД
+        all_buttons = []
+        if db_content.get('buttons_json'):
+            try:
+                buttons = json.loads(db_content['buttons_json'])
+                for idx, btn in enumerate(buttons, 1):
+                    if btn.get('url'):
+                        all_buttons.append({
+                            'index': idx,
+                            'text': btn['text'],
+                            'type': '🔗 URL',
+                            'source': 'db',
+                            'url': btn['url']
+                        })
+                    else:
+                        submenu_id = btn.get('id', f"{button_label}:{btn['text']}")
+                        all_buttons.append({
+                            'index': idx,
+                            'text': btn['text'],
+                            'type': '📄 меню',
+                            'source': 'db',
+                            'goto': f"db:{submenu_id}",
+                            'id': submenu_id
+                        })
+            except:
+                pass
 
     # Сохраняем информацию о кнопках
     await state.update_data(all_inline_buttons=all_buttons)
@@ -1391,6 +1482,13 @@ async def content_editor_goto_submenu(message: types.Message, state: FSMContext)
 @router.message(ContentEditorStates.selecting_menu, F.text == "📝 Изменить текст")
 async def content_editor_edit_text(message: types.Message, state: FSMContext):
     """Начало редактирования текста"""
+    data = await state.get_data()
+    is_static = data.get('is_static_menu', False)
+
+    if is_static:
+        await message.answer("❌ Нельзя редактировать текст статического меню из MENU_STRUCTURE")
+        return
+
     await state.set_state(ContentEditorStates.editing_text)
     await message.answer(
         "✏️ <b>Редактирование текста</b>\n\n"
@@ -1448,6 +1546,13 @@ async def content_editor_save_text(message: types.Message, state: FSMContext):
 @router.message(ContentEditorStates.selecting_menu, F.text == "➕ Добавить инлайн-кнопку")
 async def content_editor_add_inline_button_start(message: types.Message, state: FSMContext):
     """Начало добавления новой инлайн-кнопки"""
+    data = await state.get_data()
+    is_static = data.get('is_static_menu', False)
+
+    if is_static:
+        await message.answer("❌ Нельзя добавить инлайн-кнопку к статическому меню из MENU_STRUCTURE")
+        return
+
     kb = [
         [KeyboardButton(text="🔗 Кнопка-ссылка (URL)")],
         [KeyboardButton(text="📄 Кнопка-меню (submenu)")],
@@ -1688,6 +1793,11 @@ async def content_editor_delete_inline_button(message: types.Message, state: FSM
         await message.answer("❌ Кнопка не выбрана")
         return
 
+    # Проверяем, что это не статическая кнопка
+    if selected_button.get('source') == 'static':
+        await message.answer("❌ Нельзя удалить статическую кнопку из MENU_STRUCTURE")
+        return
+
     # Удаляем кнопку
     success = await delete_inline_button(button_label, selected_button)
 
@@ -1708,6 +1818,11 @@ async def content_editor_rename_inline_button_start(message: types.Message, stat
 
     if not selected_button:
         await message.answer("❌ Кнопка не выбрана")
+        return
+
+    # Проверяем, что это не статическая кнопка
+    if selected_button.get('source') == 'static':
+        await message.answer("❌ Нельзя переименовать статическую кнопку из MENU_STRUCTURE")
         return
 
     await state.set_state(ContentEditorStates.editing_inline_button_name)
@@ -1764,6 +1879,11 @@ async def content_editor_change_url_start(message: types.Message, state: FSMCont
         await message.answer("❌ Это не URL кнопка")
         return
 
+    # Проверяем, что это не статическая кнопка
+    if selected_button.get('source') == 'static':
+        await message.answer("❌ Нельзя изменить URL статической кнопки из MENU_STRUCTURE")
+        return
+
     await state.set_state(ContentEditorStates.waiting_button_url)
     await message.answer(
         f"🔗 <b>Изменение URL</b>\n\n"
@@ -1787,16 +1907,44 @@ async def content_editor_open_submenu(message: types.Message, state: FSMContext)
         await message.answer("❌ Это не кнопка подменю")
         return
 
+    # Переходим к редактированию подменю
+    await state.set_state(ContentEditorStates.selecting_menu)
+
+    # Если это статическая кнопка
+    if selected_button.get('source') == 'static':
+        # Извлекаем menu_path для статических кнопок
+        menu_path = selected_button.get('menu_path', '')
+
+        # Разбираем путь (например: "garant_checker:info")
+        path_parts = menu_path.split(':')
+        if len(path_parts) >= 2:
+            parent_menu_id = path_parts[0]
+            submenu_id = path_parts[1]
+
+            # Находим подменю в MENU_STRUCTURE
+            if parent_menu_id in MENU_STRUCTURE:
+                parent_menu = MENU_STRUCTURE[parent_menu_id]
+                if 'submenu' in parent_menu and submenu_id in parent_menu['submenu']:
+                    submenu_data = parent_menu['submenu'][submenu_id]
+                    submenu_label = submenu_data.get('label', submenu_id)
+
+                    # Открываем подменю по его label
+                    fake_msg = message.model_copy()
+                    fake_msg.text = f"📝 {submenu_label}"
+                    return await content_editor_select(fake_msg, state)
+
+        await message.answer("❌ Статическое подменю не найдено")
+        return
+
+    # Если это кнопка из БД
     submenu_id = selected_button.get('id')
     if not submenu_id:
         await message.answer("❌ ID подменю не найден")
         return
 
-    # Переходим к редактированию подменю
-    await state.set_state(ContentEditorStates.selecting_menu)
     await state.update_data(editing_button_label=submenu_id)
 
-    # Получаем контент подменю
+    # Получаем контент подменю из БД
     db_content = await get_button_content(submenu_id)
 
     if not db_content:
