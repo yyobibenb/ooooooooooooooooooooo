@@ -1,0 +1,285 @@
+import asyncpg
+import os
+from datetime import datetime
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if it exists
+load_dotenv()
+
+DATABASE_URL = "postgresql://postgres:yobibenb@localhost:5432/o"
+
+pool = None
+
+async def init_db():
+    """Initialize database and create tables"""
+    global pool
+    try:
+        # Load DB URL
+        db_url = "postgresql://postgres:yobibenb@localhost:5432/o"
+        print(f"✅ Подключение к локальной БД: {db_url.split('@')[-1]}")
+
+        try:
+            pool = await asyncpg.create_pool(
+                db_url, 
+                min_size=1, 
+                max_size=10
+            )
+            print("✓ Подключение успешно")
+        except Exception as e:
+            print(f"❌ Ошибка подключения к локальной БД: {e}")
+            return
+
+        async with pool.acquire() as conn:
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username VARCHAR(255),
+                    first_name VARCHAR(255),
+                    last_name VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS broadcasts (
+                    broadcast_id SERIAL PRIMARY KEY,
+                    admin_id BIGINT NOT NULL,
+                    text_content TEXT,
+                    photo_file_id VARCHAR(500),
+                    buttons_json TEXT,
+                    parse_mode VARCHAR(20) DEFAULT 'HTML',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS broadcast_recipients (
+                    broadcast_id INT NOT NULL,
+                    user_id BIGINT NOT NULL,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (broadcast_id, user_id)
+                )
+            ''')
+
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS statistics (
+                    button_name VARCHAR(255) PRIMARY KEY,
+                    click_count BIGINT DEFAULT 0
+                )
+            ''')
+
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS button_content (
+                    button_id VARCHAR(255) PRIMARY KEY,
+                    content TEXT NOT NULL,
+                    photo_file_id VARCHAR(500),
+                    buttons_json TEXT,
+                    parse_mode VARCHAR(20) DEFAULT 'HTML',
+                    parent_id VARCHAR(255)
+                )
+            ''')
+
+            # Migration: add parent_id if it doesn't exist
+            try:
+                await conn.execute('ALTER TABLE button_content ADD COLUMN IF NOT EXISTS parent_id VARCHAR(255)')
+            except:
+                pass
+
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS keyboard_buttons (
+                    id SERIAL PRIMARY KEY,
+                    label VARCHAR(255) UNIQUE NOT NULL,
+                    row_index INT DEFAULT 0,
+                    col_index INT DEFAULT 0
+                )
+            ''')
+
+        print("✓ Database initialized successfully")
+    except Exception as e:
+        print(f"✗ Database initialization error: {e}")
+        raise
+
+async def get_pool():
+    """Get the connection pool"""
+    return pool
+
+async def close_pool():
+    """Close the connection pool"""
+    global pool
+    if pool:
+        await pool.close()
+
+async def add_user(user_id, username, first_name, last_name):
+    """Add or update a user"""
+    if pool is None:
+        print("Database pool not initialized. Skipping add_user.")
+        return
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO users (user_id, username, first_name, last_name)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (user_id) DO NOTHING
+            ''', user_id, username, first_name, last_name)
+    except Exception as e:
+        print(f"Error adding user: {e}")
+
+async def log_click(button_name):
+    """Log a button click"""
+    if pool is None:
+        print("Database pool not initialized. Skipping log_click.")
+        return
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO statistics (button_name, click_count)
+                VALUES ($1, 1)
+                ON CONFLICT (button_name) DO UPDATE SET click_count = statistics.click_count + 1
+            ''', button_name)
+    except Exception as e:
+        print(f"Error logging click: {e}")
+
+async def get_stats():
+    """Get overall statistics"""
+    if pool is None:
+        print("Database pool not initialized. Returning empty stats.")
+        return {'user_count': 0, 'clicks': []}
+    try:
+        async with pool.acquire() as conn:
+            user_count = await conn.fetchval('SELECT COUNT(*) FROM users')
+            clicks = await conn.fetch('SELECT button_name, click_count FROM statistics ORDER BY click_count DESC LIMIT 10')
+            return {
+                'user_count': user_count,
+                'clicks': clicks
+            }
+    except Exception as e:
+        print(f"Error getting stats: {e}")
+        return {'user_count': 0, 'clicks': []}
+
+async def get_all_users():
+    """Get all users"""
+    if pool is None:
+        print("Database pool not initialized. Returning empty users list.")
+        return []
+    try:
+        async with pool.acquire() as conn:
+            users = await conn.fetch('SELECT user_id FROM users')
+            return [user['user_id'] for user in users]
+    except Exception as e:
+        print(f"Error getting users: {e}")
+        return []
+
+async def save_broadcast(admin_id, text_content, photo_file_id, buttons_json, parse_mode):
+    """Save a broadcast"""
+    if pool is None:
+        print("Database pool not initialized. Skipping save_broadcast.")
+        return None
+    try:
+        async with pool.acquire() as conn:
+            result = await conn.fetchval('''
+                INSERT INTO broadcasts (admin_id, text_content, photo_file_id, buttons_json, parse_mode)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING broadcast_id
+            ''', admin_id, text_content, photo_file_id, buttons_json, parse_mode)
+            return result
+    except Exception as e:
+        print(f"Error saving broadcast: {e}")
+        return None
+
+async def update_button_content(button_id, content, photo_file_id=None, buttons_json=None, parse_mode='HTML', parent_id=None):
+    """Update or insert button content"""
+    if pool is None:
+        print("Database pool not initialized. Skipping update_button_content.")
+        return False
+    try:
+        # Используем print для гарантированного вывода в консоль на ПК
+        print(f"\n[DB_DEBUG] === Saving Button Content ===")
+        print(f"[DB_DEBUG] Button ID: '{button_id}'")
+        print(f"[DB_DEBUG] Content: '{content[:50]}...'")
+        print(f"[DB_DEBUG] Photo: {photo_file_id}")
+        print(f"[DB_DEBUG] Parent: {parent_id}")
+        print(f"[DB_DEBUG] Buttons JSON: {buttons_json}")
+        
+        async with pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO button_content (button_id, content, photo_file_id, buttons_json, parse_mode, parent_id)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (button_id) DO UPDATE SET 
+                    content = EXCLUDED.content,
+                    photo_file_id = EXCLUDED.photo_file_id,
+                    buttons_json = EXCLUDED.buttons_json,
+                    parse_mode = EXCLUDED.parse_mode,
+                    parent_id = EXCLUDED.parent_id
+            ''', button_id, content, photo_file_id, buttons_json, parse_mode, parent_id)
+            print(f"[DB_DEBUG] ✅ Saved successfully to button_content")
+            return True
+    except Exception as e:
+        print(f"[DB_DEBUG] ❌ Error saving content for '{button_id}': {e}")
+        return False
+
+async def get_button_content(button_id):
+    """Get content for a specific button"""
+    if pool is None:
+        print("Database pool not initialized. Returning None for button content.")
+        return None
+    try:
+        print(f"\n[DB_DEBUG] === get_button_content ===")
+        print(f"[DB_DEBUG] Looking for button_id: '{button_id}'")
+        
+        async with pool.acquire() as conn:
+            res = await conn.fetchrow('SELECT * FROM button_content WHERE button_id = $1', button_id)
+            if res:
+                print(f"[DB_DEBUG] Found content in DB for button '{button_id}': {dict(res)}")
+                return dict(res)
+            else:
+                print(f"[DB_DEBUG] No content found in DB for button '{button_id}'")
+            return res
+    except Exception as e:
+        print(f"[DB_DEBUG] ❌ Error fetching content for '{button_id}': {e}")
+        return None
+
+async def get_all_keyboard_buttons():
+    """Get all keyboard buttons ordered by row and column"""
+    if pool is None:
+        print("Database pool not initialized. Returning empty keyboard buttons list.")
+        return []
+    try:
+        async with pool.acquire() as conn:
+            # Возвращаем список словарей для консистентности
+            rows = await conn.fetch('SELECT label FROM keyboard_buttons ORDER BY row_index, col_index')
+            return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"[DB_DEBUG] ❌ Error getting keyboard buttons: {e}")
+        return []
+
+async def add_keyboard_button(label, row=0, col=0):
+    """Add a new keyboard button"""
+    if pool is None:
+        print("Database pool not initialized. Skipping add_keyboard_button.")
+        return False
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO keyboard_buttons (label, row_index, col_index)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (label) DO UPDATE SET row_index = $2, col_index = $3
+            ''', label, row, col)
+            return True
+    except Exception as e:
+        print(f"Error adding keyboard button: {e}")
+        return False
+
+async def delete_keyboard_button(label):
+    """Delete a keyboard button and its content"""
+    if pool is None:
+        print("Database pool not initialized. Skipping delete_keyboard_button.")
+        return False
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute('DELETE FROM button_content WHERE button_id = $1', label)
+                await conn.execute('DELETE FROM keyboard_buttons WHERE label = $1', label)
+            return True
+    except Exception as e:
+        print(f"Error deleting keyboard button: {e}")
+        return False
