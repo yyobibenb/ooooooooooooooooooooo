@@ -283,3 +283,20 @@ async def delete_keyboard_button(label):
     except Exception as e:
         print(f"Error deleting keyboard button: {e}")
         return False
+
+async def rename_keyboard_button(old_label, new_label):
+    """Rename a keyboard button and update its content reference"""
+    if pool is None:
+        print("Database pool not initialized. Skipping rename_keyboard_button.")
+        return False
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Обновляем запись в keyboard_buttons
+                await conn.execute('UPDATE keyboard_buttons SET label = $1 WHERE label = $2', new_label, old_label)
+                # Обновляем button_id в button_content
+                await conn.execute('UPDATE button_content SET button_id = $1 WHERE button_id = $2', new_label, old_label)
+            return True
+    except Exception as e:
+        print(f"Error renaming keyboard button: {e}")
+        return False
