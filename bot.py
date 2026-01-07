@@ -3050,10 +3050,7 @@ async def main():
     # Register handlers
     dp.include_router(router)
 
-    # Debug: show registered callback handlers
-    print("\n📋 Checking callback_query handlers registration...")
-    print(f"   Router has {len(router._handlers)} handlers registered")
-    print()
+    print("✅ All handlers registered. Starting polling...\n")
 
     await dp.start_polling(bot)
 
