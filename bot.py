@@ -3037,6 +3037,9 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
     return False
 
 async def main():
+    print("\n" + "="*60)
+    print("🔍 BOT VERSION: callback_debug_v2.0")
+    print("="*60)
     print("Starting bot...")
     await init_db()
     load_chats_continuation()
@@ -3046,6 +3049,12 @@ async def main():
 
     # Register handlers
     dp.include_router(router)
+
+    # Debug: show registered callback handlers
+    print("\n📋 Registered callback_query handlers:")
+    for i, observer in enumerate(router.observers['callback_query']):
+        print(f"  {i+1}. {observer.callback.__name__}")
+    print()
 
     await dp.start_polling(bot)
 
