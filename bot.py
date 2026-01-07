@@ -1194,254 +1194,132 @@ async def rename_inline_button(menu_id: str, button_to_rename: dict, new_name: s
 
 @router.message(F.text == "✏️ Редактор контента")
 async def content_editor_start(message: types.Message, state: FSMContext):
-    """Главное меню редактора контента"""
+    """Главное меню редактора контента - показываем только кнопки клавиатуры"""
     if message.from_user.id != ADMIN_ID:
         return
 
-    # Собираем ВСЕ кнопки: статические из MENU_STRUCTURE + динамические из БД
-    all_menus = []
+    # Получаем кнопки клавиатуры из БД
+    keyboard_buttons = await get_all_keyboard_buttons()
 
-    # 1. Статические кнопки из MENU_STRUCTURE
-    for menu_key, menu_data in MENU_STRUCTURE.items():
-        label = menu_data.get('label', menu_key)
-        all_menus.append({
-            'id': f'static:{menu_key}',
-            'label': label,
-            'type': 'static'
-        })
-        # Добавляем подменю если есть
-        if 'submenu' in menu_data:
-            for sub_key, sub_data in menu_data['submenu'].items():
-                sub_label = sub_data.get('label', sub_key)
-                all_menus.append({
-                    'id': f'static:{menu_key}:{sub_key}',
-                    'label': f"  ↳ {sub_label}",
-                    'type': 'static'
-                })
+    if not keyboard_buttons:
+        await message.answer(
+            "📋 <b>Редактор контента</b>\n\n"
+            "Нет кнопок для редактирования.\n"
+            "Создайте кнопки через '🏗 Управление меню'",
+            parse_mode=ParseMode.HTML
+        )
+        return
 
-    # 2. Динамические кнопки из БД
-    db_buttons = await get_all_keyboard_buttons()
-    for btn in db_buttons:
-        label = btn.get('label') or btn['label'] if isinstance(btn, dict) else str(btn)
-        all_menus.append({
-            'id': f'db:{label}',
-            'label': f"🔹 {label}",
-            'type': 'db'
-        })
-
-    # Создаем клавиатуру
+    # Формируем список кнопок для выбора
     kb = []
-    for menu in all_menus:
-        kb.append([KeyboardButton(text=f"EDIT:{menu['id']}")])
+    for btn in keyboard_buttons:
+        label = btn.get('label', 'Без названия')
+        kb.append([KeyboardButton(text=f"📝 {label}")])
 
     kb.append([KeyboardButton(text="⬅️ Назад")])
 
     await state.set_state(ContentEditorStates.selecting_menu)
     await message.answer(
         "✏️ <b>Редактор контента</b>\n\n"
-        "Выберите раздел для редактирования:\n"
-        "📌 Статические разделы из меню\n"
-        "🔹 Кнопки из базы данных",
+        "Выберите кнопку для редактирования:",
         reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
         parse_mode=ParseMode.HTML
     )
 
-@router.message(ContentEditorStates.selecting_menu, F.text.startswith("EDIT:"))
+@router.message(ContentEditorStates.selecting_menu, F.text.startswith("📝 "))
 async def content_editor_select(message: types.Message, state: FSMContext):
-    """Обработка выбора меню для редактирования"""
-    menu_id = message.text[5:]  # Убираем "EDIT:"
+    """Обработка выбора кнопки для редактирования"""
+    button_label = message.text[2:]  # Убираем "📝 "
 
-    await state.update_data(editing_menu_id=menu_id)
+    await state.update_data(editing_button_label=button_label)
 
-    # Определяем тип и получаем данные
-    if menu_id.startswith('static:'):
-        # Статическое меню
-        parts = menu_id[7:].split(':')
-        menu_key = parts[0]
-        sub_key = parts[1] if len(parts) > 1 else None
+    # Получаем контент кнопки из БД
+    db_content = await get_button_content(button_label)
 
-        if sub_key:
-            menu_data = MENU_STRUCTURE[menu_key]['submenu'][sub_key]
-        else:
-            menu_data = MENU_STRUCTURE[menu_key]
+    if not db_content:
+        await message.answer("❌ Контент для этой кнопки не найден в БД")
+        return await content_editor_start(message, state)
 
-        current_text = menu_data.get('text', 'Нет текста')
-        current_label = menu_data.get('label', menu_key)
+    current_text = db_content.get('content', 'Нет текста')
+    has_photo = "✅" if db_content.get('photo_file_id') else "❌"
 
-        # Получаем инлайн-кнопки - показываем ОБЕ группы (из MENU_STRUCTURE и из БД)
-        inline_buttons_info = ""
-        button_label = menu_id[7:]  # Убираем 'static:'
+    # Получаем инлайн-кнопки
+    inline_buttons_info = ""
+    all_buttons = []
+    if db_content.get('buttons_json'):
+        try:
+            buttons = json.loads(db_content['buttons_json'])
+            inline_buttons_info = "\n\n📋 <b>Инлайн-кнопки:</b>\n"
+            for idx, btn in enumerate(buttons, 1):
+                if btn.get('url'):
+                    inline_buttons_info += f"{idx}. {btn['text']} → 🔗 URL\n"
+                    inline_buttons_info += f"   <code>{btn['url']}</code>\n"
+                    all_buttons.append({
+                        'index': idx,
+                        'text': btn['text'],
+                        'type': '🔗 URL',
+                        'source': 'db',
+                        'url': btn['url']
+                    })
+                else:
+                    submenu_id = btn.get('id', f"{button_label}:{btn['text']}")
+                    inline_buttons_info += f"{idx}. {btn['text']} → 📄 меню\n"
+                    inline_buttons_info += f"   <code>GOTO:db:{submenu_id}</code>\n"
+                    all_buttons.append({
+                        'index': idx,
+                        'text': btn['text'],
+                        'type': '📄 меню',
+                        'source': 'db',
+                        'goto': f"db:{submenu_id}",
+                        'id': submenu_id
+                    })
+        except:
+            pass
 
-        # Собираем все кнопки в один список
-        all_buttons = []
-        button_counter = 0
+    # Сохраняем информацию о кнопках
+    await state.update_data(all_inline_buttons=all_buttons)
 
-        # 1. Кнопки из MENU_STRUCTURE
-        if 'submenu' in menu_data:
-            for btn_key, btn_data in menu_data['submenu'].items():
-                btn_label = btn_data.get('label', btn_key)
-                btn_type = "📄 меню" if 'text' in btn_data or 'submenu' in btn_data else "🔗 ссылка"
-                button_counter += 1
-                all_buttons.append({
-                    'index': button_counter,
-                    'text': btn_label,
-                    'type': btn_type,
-                    'source': 'static',
-                    'goto': f"static:{menu_key}:{btn_key}",
-                    'key': btn_key
-                })
-        elif menu_data.get('buttons'):
-            for btn in menu_data['buttons']:
-                button_counter += 1
-                all_buttons.append({
-                    'index': button_counter,
-                    'text': btn['text'],
-                    'type': '🔗 callback',
-                    'source': 'static',
-                    'callback': btn.get('callback', 'callback')
-                })
+    # Формируем меню управления
+    kb = [
+        [KeyboardButton(text="📝 Изменить текст")],
+        [KeyboardButton(text="🖼 Изменить фото")],
+        [KeyboardButton(text="➕ Добавить инлайн-кнопку")],
+    ]
+    if all_buttons:
+        kb.append([KeyboardButton(text="🔘 Управление инлайн-кнопками")])
+    kb.append([KeyboardButton(text="⬅️ Назад")])
 
-        # 2. Кнопки из БД
-        db_content = await get_button_content(button_label)
-        if db_content and db_content.get('buttons_json'):
-            try:
-                buttons = json.loads(db_content['buttons_json'])
-                for btn in buttons:
-                    button_counter += 1
-                    if btn.get('url'):
-                        all_buttons.append({
-                            'index': button_counter,
-                            'text': btn['text'],
-                            'type': '🔗 URL',
-                            'source': 'db',
-                            'url': btn['url']
-                        })
-                    else:
-                        submenu_id = btn.get('id', f"{button_label}:{btn['text']}")
-                        all_buttons.append({
-                            'index': button_counter,
-                            'text': btn['text'],
-                            'type': '📄 меню',
-                            'source': 'db',
-                            'goto': f"db:{submenu_id}",
-                            'id': submenu_id
-                        })
-            except:
-                pass
+    text_preview = current_text[:300] + "..." if len(current_text) > 300 else current_text
 
-        # Формируем текст с кнопками
-        if all_buttons:
-            inline_buttons_info = "\n\n<b>📋 Инлайн-кнопки:</b>\n"
-            for btn in all_buttons:
-                source_label = " (статика)" if btn['source'] == 'static' else " (БД)"
-                inline_buttons_info += f"{btn['index']}. {btn['text']} → {btn['type']}{source_label}\n"
-                if btn.get('goto'):
-                    inline_buttons_info += f"   <code>GOTO:{btn['goto']}</code>\n"
-                elif btn.get('url'):
-                    inline_buttons_info += f"   {btn['url']}\n"
-                elif btn.get('callback'):
-                    inline_buttons_info += f"   {btn['callback']}\n"
-
-        # Сохраняем информацию о кнопках в state для дальнейшего использования
-        await state.update_data(all_inline_buttons=all_buttons)
-
-        # Показываем меню редактирования
-        kb = [
-            [KeyboardButton(text="📝 Изменить текст")],
-            [KeyboardButton(text="➕ Добавить инлайн-кнопку")],
-        ]
-        if all_buttons:
-            kb.append([KeyboardButton(text="🔘 Управление инлайн-кнопками")])
-        kb.append([KeyboardButton(text="⬅️ Назад")])
-
-        text_preview = current_text[:300] + "..." if len(current_text) > 300 else current_text
-
-        await message.answer(
-            f"✏️ <b>Редактирование: {current_label}</b>\n\n"
-            f"<b>📄 Текущий текст:</b>\n{text_preview}"
-            f"{inline_buttons_info}\n\n"
-            f"💡 Чтобы открыть инлайн-кнопку, скопируйте код <code>GOTO:...</code>",
-            reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
-            parse_mode=ParseMode.HTML
-        )
-
-    elif menu_id.startswith('db:'):
-        # Кнопка из БД
-        button_label = menu_id[3:]
-        db_content = await get_button_content(button_label)
-
-        if db_content:
-            current_text = db_content.get('content', 'Нет текста')
-
-            # Получаем инлайн-кнопки и формируем список
-            inline_buttons_info = ""
-            all_buttons = []
-            if db_content.get('buttons_json'):
-                try:
-                    buttons = json.loads(db_content['buttons_json'])
-                    inline_buttons_info = "\n\n<b>📋 Инлайн-кнопки:</b>\n"
-                    for idx, btn in enumerate(buttons, 1):
-                        if btn.get('url'):
-                            inline_buttons_info += f"{idx}. {btn['text']} → 🔗 URL (БД)\n"
-                            inline_buttons_info += f"   {btn['url']}\n"
-                            all_buttons.append({
-                                'index': idx,
-                                'text': btn['text'],
-                                'type': '🔗 URL',
-                                'source': 'db',
-                                'url': btn['url']
-                            })
-                        else:
-                            submenu_id = btn.get('id', f"{button_label}:{btn['text']}")
-                            inline_buttons_info += f"{idx}. {btn['text']} → 📄 меню (БД)\n"
-                            inline_buttons_info += f"   <code>GOTO:db:{submenu_id}</code>\n"
-                            all_buttons.append({
-                                'index': idx,
-                                'text': btn['text'],
-                                'type': '📄 меню',
-                                'source': 'db',
-                                'goto': f"db:{submenu_id}",
-                                'id': submenu_id
-                            })
-                except:
-                    pass
-
-            # Сохраняем информацию о кнопках
-            await state.update_data(all_inline_buttons=all_buttons)
-
-            kb = [
-                [KeyboardButton(text="📝 Изменить текст")],
-                [KeyboardButton(text="🖼 Изменить фото")],
-                [KeyboardButton(text="➕ Добавить инлайн-кнопку")],
-            ]
-            if all_buttons:
-                kb.append([KeyboardButton(text="🔘 Управление инлайн-кнопками")])
-            kb.append([KeyboardButton(text="⬅️ Назад")])
-
-            text_preview = current_text[:300] + "..." if len(current_text) > 300 else current_text
-
-            await message.answer(
-                f"✏️ <b>Редактирование: {button_label}</b>\n\n"
-                f"<b>📄 Текущий текст:</b>\n{text_preview}"
-                f"{inline_buttons_info}\n\n"
-                f"💡 Чтобы открыть инлайн-кнопку, скопируйте код <code>GOTO:...</code>",
-                reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            await message.answer("❌ Контент не найден в БД")
-            return await content_editor_start(message, state)
+    await message.answer(
+        f"✏️ <b>Редактирование: {button_label}</b>\n\n"
+        f"📄 <b>Текст:</b>\n{text_preview}\n\n"
+        f"🖼 <b>Фото:</b> {has_photo}"
+        f"{inline_buttons_info}\n\n"
+        f"💡 Используйте <code>GOTO:...</code> для перехода к подменю",
+        reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+        parse_mode=ParseMode.HTML
+    )
 
 # Обработка перехода к вложенному меню по GOTO:
-@router.message(ContentEditorStates.selecting_menu, F.text.startswith("GOTO:"))
+@router.message(ContentEditorStates.selecting_menu, F.text.startswith("GOTO:db:"))
 async def content_editor_goto_submenu(message: types.Message, state: FSMContext):
     """Переход к редактированию вложенного меню"""
-    goto_path = message.text[5:]  # Убираем "GOTO:"
+    goto_path = message.text[8:]  # Убираем "GOTO:db:"
 
-    # Симулируем выбор этого меню
+    # Переключаемся на редактирование этого подменю
+    await state.update_data(editing_button_label=goto_path)
+
+    # Получаем контент
+    db_content = await get_button_content(goto_path)
+
+    if not db_content:
+        await message.answer("❌ Контент для этого подменю не найден")
+        return await content_editor_start(message, state)
+
+    # Показываем редактор для этого подменю
     fake_msg = message.model_copy()
-    fake_msg.text = f"EDIT:{goto_path}"
-
+    fake_msg.text = f"📝 {goto_path}"
     await content_editor_select(fake_msg, state)
 
 @router.message(ContentEditorStates.selecting_menu, F.text == "📝 Изменить текст")
@@ -1470,43 +1348,33 @@ async def content_editor_save_text(message: types.Message, state: FSMContext):
         return await content_editor_start(message, state)
 
     data = await state.get_data()
-    menu_id = data.get('editing_menu_id')
+    button_label = data.get('editing_button_label')
     new_text = message.text
 
-    if menu_id.startswith('db:'):
-        # Обновляем в БД
-        button_label = menu_id[3:]
-        db_content = await get_button_content(button_label)
+    # Обновляем в БД
+    db_content = await get_button_content(button_label)
 
-        if db_content:
-            success = await update_button_content(
-                button_label,
-                new_text,
-                db_content.get('photo_file_id'),
-                db_content.get('buttons_json'),
-                db_content.get('parse_mode', 'HTML'),
-                db_content.get('parent_id')
-            )
-
-            if success:
-                await message.answer("✅ Текст успешно обновлен!")
-            else:
-                await message.answer("❌ Ошибка при обновлении")
-        else:
-            # Создаем новый контент
-            success = await update_button_content(button_label, new_text)
-            if success:
-                await message.answer("✅ Контент создан!")
-            else:
-                await message.answer("❌ Ошибка при создании")
-    else:
-        await message.answer(
-            "⚠️ <b>Важно!</b>\n\n"
-            "Статические меню редактируются в коде (MENU_STRUCTURE).\n"
-            "Для постоянного изменения обратитесь к разработчику.\n\n"
-            "Вы можете создать динамическую версию этого меню в БД.",
-            parse_mode=ParseMode.HTML
+    if db_content:
+        success = await update_button_content(
+            button_label,
+            new_text,
+            db_content.get('photo_file_id'),
+            db_content.get('buttons_json'),
+            db_content.get('parse_mode', 'HTML'),
+            db_content.get('parent_id')
         )
+
+        if success:
+            await message.answer("✅ Текст успешно обновлен!")
+        else:
+            await message.answer("❌ Ошибка при обновлении")
+    else:
+        # Создаем новый контент
+        success = await update_button_content(button_label, new_text)
+        if success:
+            await message.answer("✅ Контент создан!")
+        else:
+            await message.answer("❌ Ошибка при создании")
 
     await state.clear()
     await admin_button(message, state)
@@ -1581,52 +1449,11 @@ async def content_editor_button_text_received(message: types.Message, state: FSM
     else:  # menu
         # Для кнопки-меню сразу создаем контент
         data = await state.get_data()
-        menu_id = data.get('editing_menu_id')
+        button_label = data.get('editing_button_label')
         button_text = data.get('button_text')
 
-        # Определяем button_label в зависимости от типа меню
-        if menu_id.startswith('db:'):
-            button_label = menu_id[3:]
-        elif menu_id.startswith('static:'):
-            # Для статического меню используем путь без префикса 'static:'
-            button_label = menu_id[7:]
-        else:
-            await message.answer("❌ Неизвестный тип меню")
-            await state.clear()
-            await admin_button(message, state)
-            return
-
-        # Получаем или создаем контент в БД
+        # Получаем контент из БД
         db_content = await get_button_content(button_label)
-
-        # Если контента нет (для статических меню), создаем запись
-        if not db_content and menu_id.startswith('static:'):
-            # Получаем текст из MENU_STRUCTURE
-            parts = button_label.split(':')
-            menu_key = parts[0]
-            sub_key = parts[1] if len(parts) > 1 else None
-
-            if sub_key and menu_key in MENU_STRUCTURE and sub_key in MENU_STRUCTURE[menu_key].get('submenu', {}):
-                menu_data = MENU_STRUCTURE[menu_key]['submenu'][sub_key]
-            elif menu_key in MENU_STRUCTURE:
-                menu_data = MENU_STRUCTURE[menu_key]
-            else:
-                await message.answer("❌ Меню не найдено")
-                await state.clear()
-                await admin_button(message, state)
-                return
-
-            # Создаем запись в БД с текстом из MENU_STRUCTURE
-            await update_button_content(
-                button_label,
-                menu_data.get('text', ''),
-                None,
-                None,
-                'HTML',
-                None
-            )
-            # Получаем созданный контент
-            db_content = await get_button_content(button_label)
 
         if db_content:
             # Получаем текущие кнопки
@@ -1687,7 +1514,7 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
         return await content_editor_start(message, state)
 
     data = await state.get_data()
-    menu_id = data.get('editing_menu_id')
+    button_label = data.get('editing_button_label')
     button_text = data.get('button_text')
     button_url = message.text
 
@@ -1695,48 +1522,8 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
     if not button_url.startswith('http'):
         button_url = f'https://{button_url}'
 
-    # Определяем button_label в зависимости от типа меню
-    if menu_id.startswith('db:'):
-        button_label = menu_id[3:]
-    elif menu_id.startswith('static:'):
-        button_label = menu_id[7:]
-    else:
-        await message.answer("❌ Неизвестный тип меню")
-        await state.clear()
-        await admin_button(message, state)
-        return
-
-    # Получаем или создаем контент в БД
+    # Получаем контент из БД
     db_content = await get_button_content(button_label)
-
-    # Если контента нет (для статических меню), создаем запись
-    if not db_content and menu_id.startswith('static:'):
-        # Получаем текст из MENU_STRUCTURE
-        parts = button_label.split(':')
-        menu_key = parts[0]
-        sub_key = parts[1] if len(parts) > 1 else None
-
-        if sub_key and menu_key in MENU_STRUCTURE and sub_key in MENU_STRUCTURE[menu_key].get('submenu', {}):
-            menu_data = MENU_STRUCTURE[menu_key]['submenu'][sub_key]
-        elif menu_key in MENU_STRUCTURE:
-            menu_data = MENU_STRUCTURE[menu_key]
-        else:
-            await message.answer("❌ Меню не найдено")
-            await state.clear()
-            await admin_button(message, state)
-            return
-
-        # Создаем запись в БД с текстом из MENU_STRUCTURE
-        await update_button_content(
-            button_label,
-            menu_data.get('text', ''),
-            None,
-            None,
-            'HTML',
-            None
-        )
-        # Получаем созданный контент
-        db_content = await get_button_content(button_label)
 
     if db_content:
         # Получаем текущие кнопки
@@ -1810,14 +1597,14 @@ async def content_editor_process_button_command(message: types.Message, state: F
     if message.text == "⬅️ Назад":
         await state.set_state(ContentEditorStates.selecting_menu)
         data = await state.get_data()
-        menu_id = data.get('editing_menu_id')
+        menu_id = data.get('editing_button_label')
         fake_msg = message.model_copy()
         fake_msg.text = f"EDIT:{menu_id}"
         return await content_editor_select(fake_msg, state)
 
     text = message.text.strip()
     data = await state.get_data()
-    menu_id = data.get('editing_menu_id')
+    menu_id = data.get('editing_button_label')
     all_buttons = data.get('all_inline_buttons', [])
 
     # Обработка удаления: DEL:№
@@ -1891,7 +1678,7 @@ async def content_editor_save_inline_buttons(message: types.Message, state: FSMC
         return await content_editor_start(message, state)
 
     data = await state.get_data()
-    menu_id = data.get('editing_menu_id')
+    menu_id = data.get('editing_button_label')
 
     if not menu_id.startswith('db:'):
         await message.answer("⚠️ Инлайн-кнопки можно редактировать только для кнопок из БД")
