@@ -1610,7 +1610,7 @@ async def content_editor_button_text_received(message: types.Message, state: FSM
         db_content = await get_button_content(button_label)
 
         if db_content:
-            # Получаем текущие кнопки
+            # Получаем текущие кнопки из БД
             try:
                 buttons = json.loads(db_content['buttons_json']) if db_content.get('buttons_json') else []
             except:
@@ -1619,7 +1619,7 @@ async def content_editor_button_text_received(message: types.Message, state: FSM
             # Создаем ID для нового подменю
             submenu_id = f"{button_label}:{button_text}"
 
-            # Добавляем новую кнопку
+            # Добавляем новую кнопку к существующим
             buttons.append({
                 'text': button_text,
                 'id': submenu_id
@@ -1646,12 +1646,14 @@ async def content_editor_button_text_received(message: types.Message, state: FSM
                     button_label  # parent_id
                 )
 
-                await message.answer(
-                    f"✅ Кнопка-меню '{button_text}' добавлена!\n\n"
-                    f"Чтобы отредактировать её контент, используйте:\n"
-                    f"<code>GOTO:db:{submenu_id}</code>",
-                    parse_mode=ParseMode.HTML
-                )
+                await message.answer(f"✅ Кнопка-меню '{button_text}' добавлена!")
+
+                # Сразу открываем редактор для этой кнопки
+                await state.set_state(ContentEditorStates.selecting_menu)
+                await state.update_data(editing_button_label=submenu_id)
+                fake_msg = message.model_copy()
+                fake_msg.text = f"📝 {submenu_id}"
+                return await content_editor_select(fake_msg, state)
             else:
                 await message.answer("❌ Ошибка при добавлении кнопки")
         else:
@@ -1659,7 +1661,7 @@ async def content_editor_button_text_received(message: types.Message, state: FSM
             has_static_menu = data.get('has_static_menu', False)
 
             if has_static_menu:
-                # Берем текст из статического меню
+                # Берем текст и ВСЕ статические кнопки из статического меню
                 static_menu_info = find_static_menu_by_label(button_label)
                 if static_menu_info:
                     static_menu_data = static_menu_info['menu_data']
@@ -1667,19 +1669,40 @@ async def content_editor_button_text_received(message: types.Message, state: FSM
                         text_content = static_menu_data['pages'][0].get('text', '')
                     else:
                         text_content = static_menu_data.get('text', '')
+
+                    # Копируем ВСЕ статические кнопки
+                    buttons = []
+                    if static_menu_data.get('type') == 'inline' and static_menu_data.get('submenu'):
+                        for submenu_id, submenu_data in static_menu_data['submenu'].items():
+                            buttons.append({
+                                'text': submenu_data.get('label', submenu_id),
+                                'id': submenu_id
+                            })
+                    if 'buttons' in static_menu_data:
+                        for btn in static_menu_data['buttons']:
+                            if btn.get('url'):
+                                buttons.append({
+                                    'text': btn['text'],
+                                    'url': btn['url']
+                                })
+                            elif btn.get('callback'):
+                                # Пропускаем callback кнопки
+                                pass
                 else:
                     text_content = ''
+                    buttons = []
             else:
                 text_content = ''
+                buttons = []
 
             # Создаем ID для нового подменю
             submenu_id = f"{button_label}:{button_text}"
 
-            # Создаем новую кнопку
-            buttons = [{
+            # ДОБАВЛЯЕМ новую кнопку к существующим
+            buttons.append({
                 'text': button_text,
                 'id': submenu_id
-            }]
+            })
 
             # Сохраняем в БД
             success = await update_button_content(
@@ -1702,12 +1725,14 @@ async def content_editor_button_text_received(message: types.Message, state: FSM
                     button_label  # parent_id
                 )
 
-                await message.answer(
-                    f"✅ Кнопка-меню '{button_text}' добавлена!\n\n"
-                    f"Чтобы отредактировать её контент, используйте:\n"
-                    f"<code>GOTO:db:{submenu_id}</code>",
-                    parse_mode=ParseMode.HTML
-                )
+                await message.answer(f"✅ Кнопка-меню '{button_text}' добавлена!")
+
+                # Сразу открываем редактор для этой кнопки
+                await state.set_state(ContentEditorStates.selecting_menu)
+                await state.update_data(editing_button_label=submenu_id)
+                fake_msg = message.model_copy()
+                fake_msg.text = f"📝 {submenu_id}"
+                return await content_editor_select(fake_msg, state)
             else:
                 await message.answer("❌ Ошибка при создании контента в БД")
 
