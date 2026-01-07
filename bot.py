@@ -2321,6 +2321,10 @@ async def callback_support_button(query: types.CallbackQuery):
 @router.callback_query(F.data.startswith("inline_"))
 async def callback_inline_button(query: types.CallbackQuery,
                                  state: FSMContext):
+    print(f"\n[CALLBACK_DEBUG] ===== INLINE_ CALLBACK HANDLER HIT =====")
+    print(f"[CALLBACK_DEBUG] Data: '{query.data}'")
+    print(f"[CALLBACK_DEBUG] User: {query.from_user.id}")
+
     logger.info(
         f"🔘 Inline button pressed: {query.data}, user_id: {query.from_user.id}, has_message: {query.message is not None}"
     )
