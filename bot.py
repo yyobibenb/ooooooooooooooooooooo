@@ -1283,10 +1283,16 @@ async def content_editor_select(message: types.Message, state: FSMContext):
     kb = [
         [KeyboardButton(text="📝 Изменить текст")],
         [KeyboardButton(text="🖼 Изменить фото")],
-        [KeyboardButton(text="➕ Добавить инлайн-кнопку")],
     ]
+
+    # Добавляем каждую инлайн-кнопку как отдельную кнопку в клавиатуре
     if all_buttons:
-        kb.append([KeyboardButton(text="🔘 Управление инлайн-кнопками")])
+        kb.append([KeyboardButton(text="📋 Инлайн-кнопки:")])
+        for btn in all_buttons:
+            btn_type_icon = "🔗" if btn['type'] == '🔗 URL' else "📄"
+            kb.append([KeyboardButton(text=f"🔘 {btn_type_icon} {btn['text']}")])
+
+    kb.append([KeyboardButton(text="➕ Добавить инлайн-кнопку")])
     kb.append([KeyboardButton(text="⬅️ Назад")])
 
     text_preview = current_text[:300] + "..." if len(current_text) > 300 else current_text
@@ -1294,9 +1300,69 @@ async def content_editor_select(message: types.Message, state: FSMContext):
     await message.answer(
         f"✏️ <b>Редактирование: {button_label}</b>\n\n"
         f"📄 <b>Текст:</b>\n{text_preview}\n\n"
-        f"🖼 <b>Фото:</b> {has_photo}"
-        f"{inline_buttons_info}\n\n"
-        f"💡 Используйте <code>GOTO:...</code> для перехода к подменю",
+        f"🖼 <b>Фото:</b> {has_photo}\n\n"
+        f"💡 Нажмите на инлайн-кнопку для редактирования",
+        reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+        parse_mode=ParseMode.HTML
+    )
+
+# Обработка нажатия на инлайн-кнопку для управления
+@router.message(ContentEditorStates.selecting_menu, F.text.startswith("🔘 "))
+async def content_editor_manage_inline_button(message: types.Message, state: FSMContext):
+    """Управление конкретной инлайн-кнопкой"""
+    button_display = message.text[2:]  # Убираем "🔘 "
+
+    # Извлекаем название кнопки (убираем иконки 🔗 или 📄)
+    if button_display.startswith("🔗 "):
+        button_name = button_display[2:].strip()
+        btn_type = "url"
+    elif button_display.startswith("📄 "):
+        button_name = button_display[2:].strip()
+        btn_type = "submenu"
+    else:
+        button_name = button_display.strip()
+        btn_type = "unknown"
+
+    data = await state.get_data()
+    all_buttons = data.get('all_inline_buttons', [])
+
+    # Находим эту кнопку в списке
+    selected_button = None
+    for btn in all_buttons:
+        if btn['text'] == button_name:
+            selected_button = btn
+            break
+
+    if not selected_button:
+        await message.answer("❌ Кнопка не найдена")
+        return
+
+    # Сохраняем выбранную кнопку
+    await state.update_data(selected_inline_button=selected_button)
+
+    # Формируем меню управления
+    kb = []
+
+    if selected_button['type'] == '🔗 URL':
+        info = f"🔗 <b>URL кнопка:</b> {selected_button['text']}\n\n"
+        info += f"<b>Ссылка:</b> <code>{selected_button.get('url', 'N/A')}</code>\n\n"
+        info += "Что хотите сделать?"
+
+        kb.append([KeyboardButton(text="✏️ Изменить URL")])
+    else:
+        info = f"📄 <b>Кнопка подменю:</b> {selected_button['text']}\n\n"
+        info += f"<b>ID подменю:</b> <code>{selected_button.get('id', 'N/A')}</code>\n\n"
+        info += "Что хотите сделать?"
+
+        kb.append([KeyboardButton(text="📂 Открыть подменю")])
+
+    kb.append([KeyboardButton(text="✏️ Переименовать")])
+    kb.append([KeyboardButton(text="🗑 Удалить")])
+    kb.append([KeyboardButton(text="⬅️ Назад")])
+
+    await state.set_state(ContentEditorStates.managing_inline_buttons)
+    await message.answer(
+        info,
         reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
         parse_mode=ParseMode.HTML
     )
@@ -1508,14 +1574,25 @@ async def content_editor_button_text_received(message: types.Message, state: FSM
 
 @router.message(ContentEditorStates.waiting_button_url)
 async def content_editor_button_url_received(message: types.Message, state: FSMContext):
-    """Получен URL кнопки"""
+    """Получен URL кнопки (добавление новой или изменение существующей)"""
     if message.text == "⬅️ Отмена":
-        await state.set_state(ContentEditorStates.selecting_menu)
-        return await content_editor_start(message, state)
+        data = await state.get_data()
+        selected_button = data.get('selected_inline_button')
+
+        if selected_button:
+            # Возврат к управлению кнопкой
+            await state.set_state(ContentEditorStates.managing_inline_buttons)
+            button_label = data.get('editing_button_label')
+            fake_msg = message.model_copy()
+            fake_msg.text = f"🔘 🔗 {selected_button['text']}"
+            return await content_editor_manage_inline_button(fake_msg, state)
+        else:
+            await state.set_state(ContentEditorStates.selecting_menu)
+            return await content_editor_start(message, state)
 
     data = await state.get_data()
     button_label = data.get('editing_button_label')
-    button_text = data.get('button_text')
+    selected_button = data.get('selected_inline_button')
     button_url = message.text
 
     # Добавляем https:// если не указано
@@ -1532,143 +1609,204 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
         except:
             buttons = []
 
-        # Добавляем новую кнопку
-        buttons.append({
-            'text': button_text,
-            'url': button_url
-        })
+        if selected_button:
+            # Изменяем URL существующей кнопки
+            button_found = False
+            for btn in buttons:
+                if btn.get('text') == selected_button['text'] and btn.get('url'):
+                    btn['url'] = button_url
+                    button_found = True
+                    break
 
-        # Сохраняем
-        success = await update_button_content(
-            button_label,
-            db_content.get('content'),
-            db_content.get('photo_file_id'),
-            json.dumps(buttons),
-            db_content.get('parse_mode', 'HTML'),
-            db_content.get('parent_id')
-        )
+            if button_found:
+                # Сохраняем
+                success = await update_button_content(
+                    button_label,
+                    db_content.get('content'),
+                    db_content.get('photo_file_id'),
+                    json.dumps(buttons),
+                    db_content.get('parse_mode', 'HTML'),
+                    db_content.get('parent_id')
+                )
 
-        if success:
-            await message.answer(f"✅ Кнопка-ссылка '{button_text}' добавлена!")
+                if success:
+                    await message.answer(f"✅ URL кнопки '{selected_button['text']}' изменен!")
+                    await state.set_state(ContentEditorStates.selecting_menu)
+                    fake_msg = message.model_copy()
+                    fake_msg.text = f"📝 {button_label}"
+                    return await content_editor_select(fake_msg, state)
+                else:
+                    await message.answer("❌ Ошибка при изменении URL")
+            else:
+                await message.answer("❌ Кнопка не найдена")
         else:
-            await message.answer("❌ Ошибка при добавлении")
+            # Добавляем новую кнопку
+            button_text = data.get('button_text')
+            buttons.append({
+                'text': button_text,
+                'url': button_url
+            })
+
+            # Сохраняем
+            success = await update_button_content(
+                button_label,
+                db_content.get('content'),
+                db_content.get('photo_file_id'),
+                json.dumps(buttons),
+                db_content.get('parse_mode', 'HTML'),
+                db_content.get('parent_id')
+            )
+
+            if success:
+                await message.answer(f"✅ Кнопка-ссылка '{button_text}' добавлена!")
+            else:
+                await message.answer("❌ Ошибка при добавлении")
     else:
         await message.answer("❌ Ошибка при создании контента в БД")
 
     await state.clear()
     await admin_button(message, state)
 
-@router.message(ContentEditorStates.selecting_menu, F.text == "🔘 Управление инлайн-кнопками")
-async def content_editor_manage_inline_buttons(message: types.Message, state: FSMContext):
-    """Управление инлайн-кнопками - показ списка с возможностью удаления и редактирования"""
+@router.message(ContentEditorStates.managing_inline_buttons, F.text == "⬅️ Назад")
+async def content_editor_back_from_button_management(message: types.Message, state: FSMContext):
+    """Возврат к редактированию кнопки"""
+    await state.set_state(ContentEditorStates.selecting_menu)
     data = await state.get_data()
-    all_buttons = data.get('all_inline_buttons', [])
+    button_label = data.get('editing_button_label')
+    fake_msg = message.model_copy()
+    fake_msg.text = f"📝 {button_label}"
+    return await content_editor_select(fake_msg, state)
 
-    if not all_buttons:
-        await message.answer("📋 Инлайн-кнопок нет")
+@router.message(ContentEditorStates.managing_inline_buttons, F.text == "🗑 Удалить")
+async def content_editor_delete_inline_button(message: types.Message, state: FSMContext):
+    """Удаление инлайн-кнопки"""
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+    selected_button = data.get('selected_inline_button')
+
+    if not selected_button:
+        await message.answer("❌ Кнопка не выбрана")
         return
 
-    # Формируем сообщение со списком кнопок
-    msg = "<b>🔘 Управление инлайн-кнопками</b>\n\n"
-    msg += "Список кнопок:\n\n"
+    # Удаляем кнопку
+    success = await delete_inline_button(button_label, selected_button)
 
-    for btn in all_buttons:
-        source_label = " (статика)" if btn['source'] == 'static' else " (БД)"
-        msg += f"{btn['index']}. {btn['text']} → {btn['type']}{source_label}\n"
+    if success:
+        await message.answer(f"✅ Кнопка '{selected_button['text']}' удалена!")
+        await state.set_state(ContentEditorStates.selecting_menu)
+        fake_msg = message.model_copy()
+        fake_msg.text = f"📝 {button_label}"
+        return await content_editor_select(fake_msg, state)
+    else:
+        await message.answer("❌ Ошибка при удалении кнопки")
 
-    msg += "\n💡 Для управления отправьте:\n"
-    msg += "• <code>DEL:№</code> - удалить кнопку\n"
-    msg += "• <code>RENAME:№:Новое название</code> - переименовать\n"
-    msg += "Пример: <code>DEL:2</code> или <code>RENAME:1:Новое имя</code>"
+@router.message(ContentEditorStates.managing_inline_buttons, F.text == "✏️ Переименовать")
+async def content_editor_rename_inline_button_start(message: types.Message, state: FSMContext):
+    """Начало переименования инлайн-кнопки"""
+    data = await state.get_data()
+    selected_button = data.get('selected_inline_button')
 
-    await state.set_state(ContentEditorStates.managing_inline_buttons)
+    if not selected_button:
+        await message.answer("❌ Кнопка не выбрана")
+        return
+
+    await state.set_state(ContentEditorStates.editing_inline_button_name)
     await message.answer(
-        msg,
+        f"✏️ <b>Переименование кнопки</b>\n\n"
+        f"Текущее название: <b>{selected_button['text']}</b>\n\n"
+        f"Введите новое название:",
         reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="⬅️ Назад")]],
+            keyboard=[[KeyboardButton(text="⬅️ Отмена")]],
             resize_keyboard=True
         ),
         parse_mode=ParseMode.HTML
     )
 
-@router.message(ContentEditorStates.managing_inline_buttons)
-async def content_editor_process_button_command(message: types.Message, state: FSMContext):
-    """Обработка команд удаления и переименования кнопок"""
-    if message.text == "⬅️ Назад":
+@router.message(ContentEditorStates.editing_inline_button_name)
+async def content_editor_rename_inline_button_save(message: types.Message, state: FSMContext):
+    """Сохранение нового названия инлайн-кнопки"""
+    if message.text == "⬅️ Отмена":
         await state.set_state(ContentEditorStates.selecting_menu)
         data = await state.get_data()
-        menu_id = data.get('editing_button_label')
+        button_label = data.get('editing_button_label')
         fake_msg = message.model_copy()
-        fake_msg.text = f"EDIT:{menu_id}"
+        fake_msg.text = f"📝 {button_label}"
         return await content_editor_select(fake_msg, state)
 
-    text = message.text.strip()
+    new_name = message.text.strip()
+    if not new_name:
+        await message.answer("❌ Название не может быть пустым")
+        return
+
     data = await state.get_data()
-    menu_id = data.get('editing_button_label')
-    all_buttons = data.get('all_inline_buttons', [])
+    button_label = data.get('editing_button_label')
+    selected_button = data.get('selected_inline_button')
 
-    # Обработка удаления: DEL:№
-    if text.upper().startswith('DEL:'):
-        try:
-            btn_num = int(text.split(':', 1)[1])
-            btn_to_delete = next((b for b in all_buttons if b['index'] == btn_num), None)
+    # Переименовываем кнопку
+    success = await rename_inline_button(button_label, selected_button, new_name)
 
-            if not btn_to_delete:
-                await message.answer("❌ Кнопка с таким номером не найдена")
-                return
+    if success:
+        await message.answer(f"✅ Кнопка переименована: '{selected_button['text']}' → '{new_name}'")
+        await state.set_state(ContentEditorStates.selecting_menu)
+        fake_msg = message.model_copy()
+        fake_msg.text = f"📝 {button_label}"
+        return await content_editor_select(fake_msg, state)
+    else:
+        await message.answer("❌ Ошибка при переименовании кнопки")
 
-            # Удаляем кнопку
-            success = await delete_inline_button(menu_id, btn_to_delete)
+@router.message(ContentEditorStates.managing_inline_buttons, F.text == "✏️ Изменить URL")
+async def content_editor_change_url_start(message: types.Message, state: FSMContext):
+    """Начало изменения URL инлайн-кнопки"""
+    data = await state.get_data()
+    selected_button = data.get('selected_inline_button')
 
-            if success:
-                await message.answer(f"✅ Кнопка '{btn_to_delete['text']}' удалена!")
-                await state.set_state(ContentEditorStates.selecting_menu)
-                fake_msg = message.model_copy()
-                fake_msg.text = f"EDIT:{menu_id}"
-                return await content_editor_select(fake_msg, state)
-            else:
-                await message.answer("❌ Ошибка при удалении кнопки")
-        except (ValueError, IndexError):
-            await message.answer("❌ Неверный формат. Используйте: DEL:№")
+    if not selected_button or selected_button['type'] != '🔗 URL':
+        await message.answer("❌ Это не URL кнопка")
         return
 
-    # Обработка переименования: RENAME:№:Новое название
-    if text.upper().startswith('RENAME:'):
-        try:
-            parts = text.split(':', 2)
-            if len(parts) < 3:
-                await message.answer("❌ Неверный формат. Используйте: RENAME:№:Новое название")
-                return
+    await state.set_state(ContentEditorStates.waiting_button_url)
+    await message.answer(
+        f"🔗 <b>Изменение URL</b>\n\n"
+        f"Кнопка: <b>{selected_button['text']}</b>\n"
+        f"Текущий URL: <code>{selected_button.get('url', 'N/A')}</code>\n\n"
+        f"Введите новый URL:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Отмена")]],
+            resize_keyboard=True
+        ),
+        parse_mode=ParseMode.HTML
+    )
 
-            btn_num = int(parts[1])
-            new_name = parts[2].strip()
+@router.message(ContentEditorStates.managing_inline_buttons, F.text == "📂 Открыть подменю")
+async def content_editor_open_submenu(message: types.Message, state: FSMContext):
+    """Открытие подменю для редактирования"""
+    data = await state.get_data()
+    selected_button = data.get('selected_inline_button')
 
-            if not new_name:
-                await message.answer("❌ Новое название не может быть пустым")
-                return
-
-            btn_to_rename = next((b for b in all_buttons if b['index'] == btn_num), None)
-
-            if not btn_to_rename:
-                await message.answer("❌ Кнопка с таким номером не найдена")
-                return
-
-            # Переименовываем кнопку
-            success = await rename_inline_button(menu_id, btn_to_rename, new_name)
-
-            if success:
-                await message.answer(f"✅ Кнопка переименована: '{btn_to_rename['text']}' → '{new_name}'")
-                await state.set_state(ContentEditorStates.selecting_menu)
-                fake_msg = message.model_copy()
-                fake_msg.text = f"EDIT:{menu_id}"
-                return await content_editor_select(fake_msg, state)
-            else:
-                await message.answer("❌ Ошибка при переименовании кнопки")
-        except (ValueError, IndexError):
-            await message.answer("❌ Неверный формат. Используйте: RENAME:№:Новое название")
+    if not selected_button or selected_button['type'] != '📄 меню':
+        await message.answer("❌ Это не кнопка подменю")
         return
 
-    await message.answer("❌ Неизвестная команда. Используйте DEL:№ или RENAME:№:Новое название")
+    submenu_id = selected_button.get('id')
+    if not submenu_id:
+        await message.answer("❌ ID подменю не найден")
+        return
+
+    # Переходим к редактированию подменю
+    await state.set_state(ContentEditorStates.selecting_menu)
+    await state.update_data(editing_button_label=submenu_id)
+
+    # Получаем контент подменю
+    db_content = await get_button_content(submenu_id)
+
+    if not db_content:
+        await message.answer("❌ Контент для этого подменю не найден")
+        return
+
+    # Показываем редактор для подменю
+    fake_msg = message.model_copy()
+    fake_msg.text = f"📝 {submenu_id}"
+    await content_editor_select(fake_msg, state)
 
 @router.message(ContentEditorStates.editing_inline_buttons)
 async def content_editor_save_inline_buttons(message: types.Message, state: FSMContext):
