@@ -4,11 +4,6 @@ import logging
 import json
 from dotenv import load_dotenv
 
-# VERSION CHECK - должно быть видно сразу при импорте
-print("=" * 80)
-print("🔍 MODULE LOADED: bot.py version callback_debug_v3.0")
-print("=" * 80)
-
 # Load environment variables
 load_dotenv()
 
@@ -1538,20 +1533,6 @@ async def add_inline_text(message: types.Message, state: FSMContext):
     await state.set_state(AdminMenuStates.adding_inline_button_url)
     await message.answer("Введите ссылку для инлайн-кнопки:")
 
-# CRITICAL DEBUG: Log ALL callback queries FIRST
-@router.callback_query()
-async def log_all_callbacks_debug(query: types.CallbackQuery):
-    """ПЕРВЫЙ обработчик - логирует ВСЕ callback_query, но НЕ обрабатывает"""
-    print(f"\n[GLOBAL_CALLBACK_LOG] ========================================")
-    print(f"[GLOBAL_CALLBACK_LOG] Data: '{query.data}'")
-    print(f"[GLOBAL_CALLBACK_LOG] User: {query.from_user.id}")
-    if query.data:
-        print(f"[GLOBAL_CALLBACK_LOG] Starts with 'inline_': {query.data.startswith('inline_')}")
-        print(f"[GLOBAL_CALLBACK_LOG] Starts with 'dyn:': {query.data.startswith('dyn:')}")
-        print(f"[GLOBAL_CALLBACK_LOG] Starts with 'support:': {query.data.startswith('support:')}")
-    print(f"[GLOBAL_CALLBACK_LOG] ========================================\n")
-    # НЕ вызываем query.answer() и НЕ возвращаем значение - пропускаем дальше
-
 @router.callback_query(F.data.startswith("dyn:"))
 async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
     button_id = query.data[4:]
@@ -2340,10 +2321,6 @@ async def callback_support_button(query: types.CallbackQuery):
 @router.callback_query(F.data.startswith("inline_"))
 async def callback_inline_button(query: types.CallbackQuery,
                                  state: FSMContext):
-    print(f"\n[CALLBACK_DEBUG] ===== INLINE_ CALLBACK HANDLER HIT =====")
-    print(f"[CALLBACK_DEBUG] Data: '{query.data}'")
-    print(f"[CALLBACK_DEBUG] User: {query.from_user.id}")
-
     logger.info(
         f"🔘 Inline button pressed: {query.data}, user_id: {query.from_user.id}, has_message: {query.message is not None}"
     )
@@ -3056,9 +3033,6 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
     return False
 
 async def main():
-    print("\n" + "="*60)
-    print("🔍 BOT VERSION: callback_debug_v2.0")
-    print("="*60)
     print("Starting bot...")
     await init_db()
     load_chats_continuation()
@@ -3068,8 +3042,6 @@ async def main():
 
     # Register handlers
     dp.include_router(router)
-
-    print("✅ All handlers registered. Starting polling...\n")
 
     await dp.start_polling(bot)
 
