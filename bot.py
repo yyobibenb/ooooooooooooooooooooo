@@ -1443,6 +1443,7 @@ async def content_editor_manage_inline_button(message: types.Message, state: FSM
         info += f"<b>ID подменю:</b> <code>{selected_button.get('id', 'N/A')}</code>\n\n"
         info += "Что хотите сделать?"
 
+        kb.append([KeyboardButton(text="📝 Изменить текст внутри")])
         kb.append([KeyboardButton(text="📂 Открыть подменю")])
 
     kb.append([KeyboardButton(text="✏️ Переименовать")])
@@ -1503,10 +1504,38 @@ async def content_editor_save_text(message: types.Message, state: FSMContext):
         return await content_editor_start(message, state)
 
     data = await state.get_data()
+    editing_submenu_id = data.get('editing_submenu_id')
     button_label = data.get('editing_button_label')
     new_text = message.text
 
-    # Обновляем в БД
+    # Проверяем, редактируем ли мы текст подменю
+    if editing_submenu_id:
+        # Редактируем текст инлайн-кнопки подменю
+        db_content = await get_button_content(editing_submenu_id)
+
+        if db_content:
+            success = await update_button_content(
+                editing_submenu_id,
+                new_text,
+                db_content.get('photo_file_id'),
+                db_content.get('buttons_json'),
+                db_content.get('parse_mode', 'HTML'),
+                db_content.get('parent_id')
+            )
+        else:
+            # Создаем новый контент для подменю
+            success = await update_button_content(editing_submenu_id, new_text, None, None, 'HTML', button_label)
+
+        if success:
+            await message.answer("✅ Текст подменю успешно обновлен!")
+        else:
+            await message.answer("❌ Ошибка при обновлении")
+
+        await state.clear()
+        await admin_button(message, state)
+        return
+
+    # Обычное редактирование текста кнопки клавиатуры
     db_content = await get_button_content(button_label)
 
     if db_content:
@@ -2052,9 +2081,9 @@ async def content_editor_change_url_start(message: types.Message, state: FSMCont
         parse_mode=ParseMode.HTML
     )
 
-@router.message(ContentEditorStates.managing_inline_buttons, F.text == "📂 Открыть подменю")
-async def content_editor_open_submenu(message: types.Message, state: FSMContext):
-    """Открытие подменю для редактирования"""
+@router.message(ContentEditorStates.managing_inline_buttons, F.text == "📝 Изменить текст внутри")
+async def content_editor_edit_submenu_text(message: types.Message, state: FSMContext):
+    """Редактирование текста внутри инлайн-кнопки подменю"""
     data = await state.get_data()
     selected_button = data.get('selected_inline_button')
 
@@ -2062,7 +2091,58 @@ async def content_editor_open_submenu(message: types.Message, state: FSMContext)
         await message.answer("❌ Это не кнопка подменю")
         return
 
-    # Переходим к редактированию подменю
+    # Получаем ID подменю
+    submenu_id = selected_button.get('id')
+    if not submenu_id:
+        await message.answer("❌ ID подменю не найден")
+        return
+
+    # Сохраняем контекст
+    await state.update_data(editing_submenu_id=submenu_id)
+    await state.set_state(ContentEditorStates.editing_text)
+
+    # Получаем текущий текст
+    db_content = await get_button_content(submenu_id)
+    if db_content:
+        current_text = db_content.get('content', 'Нет текста')
+    else:
+        # Пробуем найти в статике
+        static_menu_info = find_static_menu_by_label(selected_button['text'])
+        if static_menu_info:
+            static_menu_data = static_menu_info['menu_data']
+            if 'pages' in static_menu_data and static_menu_data['pages']:
+                current_text = static_menu_data['pages'][0].get('text', 'Нет текста')
+            else:
+                current_text = static_menu_data.get('text', 'Нет текста')
+        else:
+            current_text = 'Нет текста'
+
+    await message.answer(
+        f"✏️ <b>Редактирование текста внутри: {selected_button['text']}</b>\n\n"
+        f"<b>Текущий текст:</b>\n{current_text[:200]}...\n\n"
+        f"Введите новый текст. Поддерживается HTML форматирование:\n"
+        f"• <code>&lt;b&gt;жирный&lt;/b&gt;</code> → <b>жирный</b>\n"
+        f"• <code>&lt;i&gt;курсив&lt;/i&gt;</code> → <i>курсив</i>\n"
+        f"• <code>&lt;a href='URL'&gt;текст&lt;/a&gt;</code> → ссылка\n"
+        f"• <code>&lt;code&gt;код&lt;/code&gt;</code> → <code>код</code>",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Отмена")]],
+            resize_keyboard=True
+        ),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(ContentEditorStates.managing_inline_buttons, F.text == "📂 Открыть подменю")
+async def content_editor_open_submenu(message: types.Message, state: FSMContext):
+    """Открытие подменю для редактирования - показывает инлайн-кнопки внутри"""
+    data = await state.get_data()
+    selected_button = data.get('selected_inline_button')
+
+    if not selected_button or selected_button['type'] != '📄 меню':
+        await message.answer("❌ Это не кнопка подменю")
+        return
+
+    # Переходим к редактированию подменю - показываем ЕГО инлайн-кнопки
     await state.set_state(ContentEditorStates.selecting_menu)
 
     # Если это статическая кнопка
@@ -2099,14 +2179,8 @@ async def content_editor_open_submenu(message: types.Message, state: FSMContext)
 
     await state.update_data(editing_button_label=submenu_id)
 
-    # Получаем контент подменю из БД
-    db_content = await get_button_content(submenu_id)
-
-    if not db_content:
-        await message.answer("❌ Контент для этого подменю не найден")
-        return
-
     # Показываем редактор для подменю
+    # content_editor_select сам разберется: есть в БД или статическое
     fake_msg = message.model_copy()
     fake_msg.text = f"📝 {submenu_id}"
     await content_editor_select(fake_msg, state)
