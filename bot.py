@@ -1538,6 +1538,20 @@ async def add_inline_text(message: types.Message, state: FSMContext):
     await state.set_state(AdminMenuStates.adding_inline_button_url)
     await message.answer("Введите ссылку для инлайн-кнопки:")
 
+# CRITICAL DEBUG: Log ALL callback queries FIRST
+@router.callback_query()
+async def log_all_callbacks_debug(query: types.CallbackQuery):
+    """ПЕРВЫЙ обработчик - логирует ВСЕ callback_query, но НЕ обрабатывает"""
+    print(f"\n[GLOBAL_CALLBACK_LOG] ========================================")
+    print(f"[GLOBAL_CALLBACK_LOG] Data: '{query.data}'")
+    print(f"[GLOBAL_CALLBACK_LOG] User: {query.from_user.id}")
+    if query.data:
+        print(f"[GLOBAL_CALLBACK_LOG] Starts with 'inline_': {query.data.startswith('inline_')}")
+        print(f"[GLOBAL_CALLBACK_LOG] Starts with 'dyn:': {query.data.startswith('dyn:')}")
+        print(f"[GLOBAL_CALLBACK_LOG] Starts with 'support:': {query.data.startswith('support:')}")
+    print(f"[GLOBAL_CALLBACK_LOG] ========================================\n")
+    # НЕ вызываем query.answer() и НЕ возвращаем значение - пропускаем дальше
+
 @router.callback_query(F.data.startswith("dyn:"))
 async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
     button_id = query.data[4:]
