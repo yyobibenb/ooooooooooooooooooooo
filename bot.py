@@ -3008,7 +3008,7 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
             await log_click(item.get('label'))
             if item.get('type') == 'inline':
                 kb = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text=sub['label'], callback_data=f"menu:{key}:{skey}")]
+                    [InlineKeyboardButton(text=sub['label'], callback_data=f"inline_{key}:{skey}")]
                     for skey, sub in item.get('submenu', {}).items()
                 ])
                 await message.answer(item['text'], reply_markup=kb, parse_mode=ParseMode.HTML)
