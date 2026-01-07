@@ -3051,9 +3051,8 @@ async def main():
     dp.include_router(router)
 
     # Debug: show registered callback handlers
-    print("\n📋 Registered callback_query handlers:")
-    for i, observer in enumerate(router.observers['callback_query']):
-        print(f"  {i+1}. {observer.callback.__name__}")
+    print("\n📋 Checking callback_query handlers registration...")
+    print(f"   Router has {len(router._handlers)} handlers registered")
     print()
 
     await dp.start_polling(bot)
