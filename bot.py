@@ -87,6 +87,15 @@ class ButtonEditStates(StatesGroup):
     waiting_for_photo = State()
     waiting_for_inline_buttons = State()
 
+# Новая система редактирования контента
+class ContentEditorStates(StatesGroup):
+    selecting_menu = State()  # Выбор меню для редактирования
+    editing_text = State()     # Редактирование текста
+    editing_inline_buttons = State()  # Редактирование инлайн-кнопок
+    adding_inline_button = State()    # Добавление новой инлайн-кнопки
+    waiting_button_text = State()     # Ожидание текста кнопки
+    waiting_button_url = State()      # Ожидание URL кнопки
+
 class ChatsContinuationStates(StatesGroup):
     selecting_chat_section = State()
     managing_lines = State()
@@ -610,7 +619,7 @@ async def admin_button(message: types.Message, state: FSMContext):
         keyboard=[[KeyboardButton(text="📢 Рассылка")],
                   [KeyboardButton(text="📊 Статистика")],
                   [KeyboardButton(text="🏗 Управление меню")],
-                  [KeyboardButton(text="📝 Редактировать кнопки")],
+                  [KeyboardButton(text="✏️ Редактор контента")],
                   [KeyboardButton(text="🔙 Выйти")]],
         resize_keyboard=True)
     await message.answer("🔐 <b>Админ-панель</b>\n\nВыберите действие:",
@@ -979,6 +988,324 @@ async def save_button_config(message: types.Message, state: FSMContext):
 
     await state.clear()
     await admin_button(message, state)
+
+# ============ НОВЫЙ РЕДАКТОР КОНТЕНТА ============
+
+@router.message(F.text == "✏️ Редактор контента")
+async def content_editor_start(message: types.Message, state: FSMContext):
+    """Главное меню редактора контента"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    # Собираем ВСЕ кнопки: статические из MENU_STRUCTURE + динамические из БД
+    all_menus = []
+
+    # 1. Статические кнопки из MENU_STRUCTURE
+    for menu_key, menu_data in MENU_STRUCTURE.items():
+        label = menu_data.get('label', menu_key)
+        all_menus.append({
+            'id': f'static:{menu_key}',
+            'label': label,
+            'type': 'static'
+        })
+        # Добавляем подменю если есть
+        if 'submenu' in menu_data:
+            for sub_key, sub_data in menu_data['submenu'].items():
+                sub_label = sub_data.get('label', sub_key)
+                all_menus.append({
+                    'id': f'static:{menu_key}:{sub_key}',
+                    'label': f"  ↳ {sub_label}",
+                    'type': 'static'
+                })
+
+    # 2. Динамические кнопки из БД
+    db_buttons = await get_all_keyboard_buttons()
+    for btn in db_buttons:
+        label = btn.get('label') or btn['label'] if isinstance(btn, dict) else str(btn)
+        all_menus.append({
+            'id': f'db:{label}',
+            'label': f"🔹 {label}",
+            'type': 'db'
+        })
+
+    # Создаем клавиатуру
+    kb = []
+    for menu in all_menus:
+        kb.append([KeyboardButton(text=f"EDIT:{menu['id']}")])
+
+    kb.append([KeyboardButton(text="⬅️ Назад")])
+
+    await state.set_state(ContentEditorStates.selecting_menu)
+    await message.answer(
+        "✏️ <b>Редактор контента</b>\n\n"
+        "Выберите раздел для редактирования:\n"
+        "📌 Статические разделы из меню\n"
+        "🔹 Кнопки из базы данных",
+        reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(ContentEditorStates.selecting_menu, F.text.startswith("EDIT:"))
+async def content_editor_select(message: types.Message, state: FSMContext):
+    """Обработка выбора меню для редактирования"""
+    menu_id = message.text[5:]  # Убираем "EDIT:"
+
+    await state.update_data(editing_menu_id=menu_id)
+
+    # Определяем тип и получаем данные
+    if menu_id.startswith('static:'):
+        # Статическое меню
+        parts = menu_id[7:].split(':')
+        menu_key = parts[0]
+        sub_key = parts[1] if len(parts) > 1 else None
+
+        if sub_key:
+            menu_data = MENU_STRUCTURE[menu_key]['submenu'][sub_key]
+        else:
+            menu_data = MENU_STRUCTURE[menu_key]
+
+        current_text = menu_data.get('text', 'Нет текста')
+        current_label = menu_data.get('label', menu_key)
+
+        # Показываем меню редактирования
+        kb = [
+            [KeyboardButton(text="📝 Изменить текст")],
+            [KeyboardButton(text="🔘 Редактировать инлайн-кнопки")],
+            [KeyboardButton(text="⬅️ Назад")]
+        ]
+
+        await message.answer(
+            f"✏️ <b>Редактирование: {current_label}</b>\n\n"
+            f"<b>Текущий текст:</b>\n{current_text[:200]}...\n\n"
+            f"Выберите действие:",
+            reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+            parse_mode=ParseMode.HTML
+        )
+
+    elif menu_id.startswith('db:'):
+        # Кнопка из БД
+        button_label = menu_id[3:]
+        db_content = await get_button_content(button_label)
+
+        if db_content:
+            current_text = db_content.get('content', 'Нет текста')
+
+            kb = [
+                [KeyboardButton(text="📝 Изменить текст")],
+                [KeyboardButton(text="🖼 Изменить фото")],
+                [KeyboardButton(text="🔘 Редактировать инлайн-кнопки")],
+                [KeyboardButton(text="⬅️ Назад")]
+            ]
+
+            await message.answer(
+                f"✏️ <b>Редактирование: {button_label}</b>\n\n"
+                f"<b>Текущий текст:</b>\n{current_text[:200]}...\n\n"
+                f"Выберите действие:",
+                reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.answer("❌ Контент не найден в БД")
+            return await content_editor_start(message, state)
+
+@router.message(ContentEditorStates.selecting_menu, F.text == "📝 Изменить текст")
+async def content_editor_edit_text(message: types.Message, state: FSMContext):
+    """Начало редактирования текста"""
+    await state.set_state(ContentEditorStates.editing_text)
+    await message.answer(
+        "✏️ <b>Редактирование текста</b>\n\n"
+        "Введите новый текст. Поддерживается HTML форматирование:\n"
+        "• <code>&lt;b&gt;жирный&lt;/b&gt;</code> → <b>жирный</b>\n"
+        "• <code>&lt;i&gt;курсив&lt;/i&gt;</code> → <i>курсив</i>\n"
+        "• <code>&lt;a href='URL'&gt;текст&lt;/a&gt;</code> → ссылка\n"
+        "• <code>&lt;code&gt;код&lt;/code&gt;</code> → <code>код</code>",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Отмена")]],
+            resize_keyboard=True
+        ),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(ContentEditorStates.editing_text)
+async def content_editor_save_text(message: types.Message, state: FSMContext):
+    """Сохранение нового текста"""
+    if message.text == "⬅️ Отмена":
+        await state.clear()
+        return await content_editor_start(message, state)
+
+    data = await state.get_data()
+    menu_id = data.get('editing_menu_id')
+    new_text = message.text
+
+    if menu_id.startswith('db:'):
+        # Обновляем в БД
+        button_label = menu_id[3:]
+        db_content = await get_button_content(button_label)
+
+        if db_content:
+            success = await update_button_content(
+                button_label,
+                new_text,
+                db_content.get('photo_file_id'),
+                db_content.get('buttons_json'),
+                db_content.get('parse_mode', 'HTML'),
+                db_content.get('parent_id')
+            )
+
+            if success:
+                await message.answer("✅ Текст успешно обновлен!")
+            else:
+                await message.answer("❌ Ошибка при обновлении")
+        else:
+            # Создаем новый контент
+            success = await update_button_content(button_label, new_text)
+            if success:
+                await message.answer("✅ Контент создан!")
+            else:
+                await message.answer("❌ Ошибка при создании")
+    else:
+        await message.answer(
+            "⚠️ <b>Важно!</b>\n\n"
+            "Статические меню редактируются в коде (MENU_STRUCTURE).\n"
+            "Для постоянного изменения обратитесь к разработчику.\n\n"
+            "Вы можете создать динамическую версию этого меню в БД.",
+            parse_mode=ParseMode.HTML
+        )
+
+    await state.clear()
+    await admin_button(message, state)
+
+@router.message(ContentEditorStates.selecting_menu, F.text == "🔘 Редактировать инлайн-кнопки")
+async def content_editor_edit_inline_buttons(message: types.Message, state: FSMContext):
+    """Редактирование инлайн-кнопок"""
+    data = await state.get_data()
+    menu_id = data.get('editing_menu_id')
+
+    # Получаем текущие инлайн-кнопки
+    current_buttons = []
+    if menu_id.startswith('db:'):
+        button_label = menu_id[3:]
+        db_content = await get_button_content(button_label)
+        if db_content and db_content.get('buttons_json'):
+            try:
+                current_buttons = json.loads(db_content['buttons_json'])
+            except:
+                pass
+
+    # Показываем текущие кнопки
+    if current_buttons:
+        buttons_text = "\n".join([
+            f"{i+1}. {btn.get('text')} → {btn.get('url') or btn.get('id', 'submenu')}"
+            for i, btn in enumerate(current_buttons)
+        ])
+        msg = f"<b>Текущие инлайн-кнопки:</b>\n\n{buttons_text}\n\n"
+    else:
+        msg = "<b>Инлайн-кнопок пока нет</b>\n\n"
+
+    msg += (
+        "Отправьте инлайн-кнопки в формате:\n"
+        "<code>Текст кнопки | URL</code>\n\n"
+        "Каждая кнопка с новой строки. Пример:\n"
+        "<code>Перейти на сайт | https://example.com\n"
+        "Написать в поддержку | https://t.me/support</code>\n\n"
+        "Или отправьте 'удалить все' чтобы удалить все кнопки"
+    )
+
+    await state.set_state(ContentEditorStates.editing_inline_buttons)
+    await message.answer(
+        msg,
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="удалить все")], [KeyboardButton(text="⬅️ Отмена")]],
+            resize_keyboard=True
+        ),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(ContentEditorStates.editing_inline_buttons)
+async def content_editor_save_inline_buttons(message: types.Message, state: FSMContext):
+    """Сохранение инлайн-кнопок"""
+    if message.text == "⬅️ Отмена":
+        await state.set_state(ContentEditorStates.selecting_menu)
+        return await content_editor_start(message, state)
+
+    data = await state.get_data()
+    menu_id = data.get('editing_menu_id')
+
+    if not menu_id.startswith('db:'):
+        await message.answer("⚠️ Инлайн-кнопки можно редактировать только для кнопок из БД")
+        await state.clear()
+        return await admin_button(message, state)
+
+    button_label = menu_id[3:]
+    db_content = await get_button_content(button_label)
+
+    if not db_content:
+        await message.answer("❌ Контент не найден в БД")
+        await state.clear()
+        return await admin_button(message, state)
+
+    # Обработка удаления всех кнопок
+    if message.text.lower() == "удалить все":
+        success = await update_button_content(
+            button_label,
+            db_content.get('content'),
+            db_content.get('photo_file_id'),
+            None,  # Удаляем все кнопки
+            db_content.get('parse_mode', 'HTML'),
+            db_content.get('parent_id')
+        )
+        if success:
+            await message.answer("✅ Все инлайн-кнопки удалены!")
+        else:
+            await message.answer("❌ Ошибка при удалении")
+        await state.clear()
+        return await admin_button(message, state)
+
+    # Парсинг новых кнопок
+    new_buttons = []
+    lines = message.text.strip().split('\n')
+
+    for line in lines:
+        if '|' in line:
+            parts = line.split('|', 1)
+            text = parts[0].strip()
+            url = parts[1].strip()
+
+            if text and url:
+                new_buttons.append({
+                    'text': text,
+                    'url': url if url.startswith('http') else f'https://{url}'
+                })
+
+    if not new_buttons:
+        await message.answer("❌ Не удалось распознать кнопки. Используйте формат: Текст | URL")
+        return
+
+    # Сохраняем
+    success = await update_button_content(
+        button_label,
+        db_content.get('content'),
+        db_content.get('photo_file_id'),
+        json.dumps(new_buttons),
+        db_content.get('parse_mode', 'HTML'),
+        db_content.get('parent_id')
+    )
+
+    if success:
+        await message.answer(f"✅ Сохранено {len(new_buttons)} инлайн-кнопок!")
+    else:
+        await message.answer("❌ Ошибка при сохранении")
+
+    await state.clear()
+    await admin_button(message, state)
+
+@router.message(ContentEditorStates.selecting_menu, F.text == "⬅️ Назад")
+async def content_editor_back(message: types.Message, state: FSMContext):
+    """Возврат в админ-панель"""
+    await state.clear()
+    await admin_button(message, state)
+
+# ============ КОНЕЦ НОВОГО РЕДАКТОРА ============
 
 @router.message(F.text == "📊 Статистика")
 async def show_statistics(message: types.Message):
