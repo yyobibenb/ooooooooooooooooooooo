@@ -4,6 +4,11 @@ import logging
 import json
 from dotenv import load_dotenv
 
+# VERSION CHECK - должно быть видно сразу при импорте
+print("=" * 80)
+print("🔍 MODULE LOADED: bot.py version callback_debug_v3.0")
+print("=" * 80)
+
 # Load environment variables
 load_dotenv()
 
