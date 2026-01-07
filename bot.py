@@ -1474,8 +1474,7 @@ async def content_editor_goto_submenu(message: types.Message, state: FSMContext)
         return await content_editor_start(message, state)
 
     # Показываем редактор для этого подменю
-    fake_msg = message.model_copy()
-    fake_msg.text = f"📝 {goto_path}"
+    fake_msg = message.model_copy(update={"text": f"📝 {goto_path}"})
     await content_editor_select(fake_msg, state)
 
 @router.message(ContentEditorStates.selecting_menu, F.text == "📝 Изменить текст")
@@ -1766,8 +1765,7 @@ async def content_editor_submenu_content_received(message: types.Message, state:
     # Сразу открываем редактор для этой кнопки
     await state.set_state(ContentEditorStates.selecting_menu)
     await state.update_data(editing_button_label=submenu_id)
-    fake_msg = message.model_copy()
-    fake_msg.text = f"📝 {submenu_id}"
+    fake_msg = message.model_copy(update={"text": f"📝 {submenu_id}"})
     return await content_editor_select(fake_msg, state)
 
 @router.message(ContentEditorStates.waiting_button_url)
@@ -1781,8 +1779,7 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
             # Возврат к управлению кнопкой
             await state.set_state(ContentEditorStates.managing_inline_buttons)
             button_label = data.get('editing_button_label')
-            fake_msg = message.model_copy()
-            fake_msg.text = f"🔘 🔗 {selected_button['text']}"
+            fake_msg = message.model_copy(update={"text": f"🔘 🔗 {selected_button['text']}"})
             return await content_editor_manage_inline_button(fake_msg, state)
         else:
             await state.set_state(ContentEditorStates.selecting_menu)
@@ -1830,8 +1827,7 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
                 if success:
                     await message.answer(f"✅ URL кнопки '{selected_button['text']}' изменен!")
                     await state.set_state(ContentEditorStates.selecting_menu)
-                    fake_msg = message.model_copy()
-                    fake_msg.text = f"📝 {button_label}"
+                    fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
                     return await content_editor_select(fake_msg, state)
                 else:
                     await message.answer("❌ Ошибка при изменении URL")
@@ -1855,8 +1851,7 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
                     if success:
                         await message.answer(f"✅ URL кнопки '{selected_button['text']}' изменен!")
                         await state.set_state(ContentEditorStates.selecting_menu)
-                        fake_msg = message.model_copy()
-                        fake_msg.text = f"📝 {button_label}"
+                        fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
                         return await content_editor_select(fake_msg, state)
                     else:
                         await message.answer("❌ Ошибка при изменении URL")
@@ -1957,8 +1952,7 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
             if selected_button:
                 await message.answer(f"✅ URL кнопки '{selected_button['text']}' изменен!")
                 await state.set_state(ContentEditorStates.selecting_menu)
-                fake_msg = message.model_copy()
-                fake_msg.text = f"📝 {button_label}"
+                fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
                 return await content_editor_select(fake_msg, state)
             else:
                 await message.answer(f"✅ Кнопка-ссылка добавлена!")
@@ -1974,8 +1968,7 @@ async def content_editor_back_from_button_management(message: types.Message, sta
     await state.set_state(ContentEditorStates.selecting_menu)
     data = await state.get_data()
     button_label = data.get('editing_button_label')
-    fake_msg = message.model_copy()
-    fake_msg.text = f"📝 {button_label}"
+    fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
     return await content_editor_select(fake_msg, state)
 
 @router.message(ContentEditorStates.managing_inline_buttons, F.text == "🗑 Удалить")
@@ -1996,8 +1989,7 @@ async def content_editor_delete_inline_button(message: types.Message, state: FSM
     if success:
         await message.answer(f"✅ Кнопка '{selected_button['text']}' удалена!")
         await state.set_state(ContentEditorStates.selecting_menu)
-        fake_msg = message.model_copy()
-        fake_msg.text = f"📝 {button_label}"
+        fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
         return await content_editor_select(fake_msg, state)
     else:
         await message.answer("❌ Ошибка при удалении кнопки")
@@ -2032,8 +2024,7 @@ async def content_editor_rename_inline_button_save(message: types.Message, state
         await state.set_state(ContentEditorStates.selecting_menu)
         data = await state.get_data()
         button_label = data.get('editing_button_label')
-        fake_msg = message.model_copy()
-        fake_msg.text = f"📝 {button_label}"
+        fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
         return await content_editor_select(fake_msg, state)
 
     new_name = message.text.strip()
@@ -2051,8 +2042,7 @@ async def content_editor_rename_inline_button_save(message: types.Message, state
     if success:
         await message.answer(f"✅ Кнопка переименована: '{selected_button['text']}' → '{new_name}'")
         await state.set_state(ContentEditorStates.selecting_menu)
-        fake_msg = message.model_copy()
-        fake_msg.text = f"📝 {button_label}"
+        fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
         return await content_editor_select(fake_msg, state)
     else:
         await message.answer("❌ Ошибка при переименовании кнопки")
@@ -2164,8 +2154,7 @@ async def content_editor_open_submenu(message: types.Message, state: FSMContext)
                     submenu_label = submenu_data.get('label', submenu_id)
 
                     # Открываем подменю по его label
-                    fake_msg = message.model_copy()
-                    fake_msg.text = f"📝 {submenu_label}"
+                    fake_msg = message.model_copy(update={"text": f"📝 {submenu_label}"})
                     return await content_editor_select(fake_msg, state)
 
         await message.answer("❌ Статическое подменю не найдено")
@@ -2181,8 +2170,7 @@ async def content_editor_open_submenu(message: types.Message, state: FSMContext)
 
     # Показываем редактор для подменю
     # content_editor_select сам разберется: есть в БД или статическое
-    fake_msg = message.model_copy()
-    fake_msg.text = f"📝 {submenu_id}"
+    fake_msg = message.model_copy(update={"text": f"📝 {submenu_id}"})
     await content_editor_select(fake_msg, state)
 
 @router.message(ContentEditorStates.editing_inline_buttons)
