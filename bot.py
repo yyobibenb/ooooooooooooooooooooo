@@ -3037,9 +3037,6 @@ async def main():
     await init_db()
     load_chats_continuation()
 
-    # Register dynamic callback
-    router.callback_query.register(process_dynamic_inline, F.data.startswith("dyn:"))
-
     # Один главный обработчик для всего текста
     router.message.register(handle_all_text_messages, F.text)
 
