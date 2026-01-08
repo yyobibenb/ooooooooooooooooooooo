@@ -461,40 +461,25 @@ MENU_STRUCTURE = {
 
 
 def get_dynamic_keyboard(user_id=None):
+    """
+    DEPRECATED: Используйте get_dynamic_keyboard_async() вместо этой функции.
+    После миграции в БД эта функция не используется, так как не может загружать данные из БД синхронно.
+    """
     keyboard = []
-    row = []
-    for key, menu in MENU_STRUCTURE.items():
-        row.append(KeyboardButton(text=menu['label']))
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
 
-    # Добавляем динамические кнопки из БД
-    try:
-        import asyncio
-        from database import get_all_keyboard_buttons
-        # This is a bit tricky since get_dynamic_keyboard is likely called in sync context or needs await
-        # Assuming it's used in an async handler, we should make it async
-        pass 
-    except: pass
-
-    if row:
-        keyboard.append(row)
+    # После миграции кнопки берутся только из БД через async функцию
+    # Эта синхронная функция оставлена для совместимости, но не должна использоваться
 
     if ADMIN_ID and user_id == ADMIN_ID:
         keyboard.append([KeyboardButton(text="🔐 Админ-панель")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 async def get_dynamic_keyboard_async(user_id=None):
+    """Получает клавиатуру только из БД (после миграции файл не используется)"""
     keyboard = []
     row = []
-    for key, menu in MENU_STRUCTURE.items():
-        row.append(KeyboardButton(text=menu['label']))
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
 
-    # Добавляем динамические кнопки из БД
+    # Берём все кнопки только из БД
     dynamic_btns = await get_all_keyboard_buttons()
     for btn in dynamic_btns:
         lbl = btn['label']
