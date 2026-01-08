@@ -90,7 +90,10 @@ def group_buttons_by_row(buttons, buttons_data=None, default_per_row=1):
 
         # Конвертируем row_width в единицы занимаемого места (в четвертях ряда)
         # row_width=1 означает кнопка на весь ряд (4/4), 2 = половина (2/4), 3 = треть (≈1.33/4), 4 = четверть (1/4)
-        if row_width == 1:
+        if row_width is None or row_width == 0:
+            # По умолчанию 2 кнопки в ряду
+            btn_size = 2
+        elif row_width == 1:
             btn_size = 4  # На весь ряд
         elif row_width == 2:
             btn_size = 2  # Половина ряда
