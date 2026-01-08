@@ -2907,6 +2907,60 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
                     print(f"[BOT_DEBUG_VERBOSE] Successfully loaded content for fuzzy match '{b_lbl}'")
                     break
 
+        # Если всё ещё не нашли - ищем в MENU_STRUCTURE
+        if not db_content:
+            print(f"[BOT_DEBUG_VERBOSE] Searching in MENU_STRUCTURE for '{button_id}'...")
+
+            def find_in_menu_structure(target_id, structure=None):
+                """Ищет меню по ID в MENU_STRUCTURE"""
+                if structure is None:
+                    structure = MENU_STRUCTURE
+
+                for menu_id, menu_data in structure.items():
+                    if menu_id == target_id:
+                        return menu_data
+
+                    if 'submenu' in menu_data:
+                        result = find_in_menu_structure(target_id, menu_data['submenu'])
+                        if result:
+                            return result
+                return None
+
+            found_menu = find_in_menu_structure(button_id)
+            if found_menu:
+                print(f"[BOT_DEBUG_VERBOSE] ✅ Found in MENU_STRUCTURE: '{button_id}'")
+                # Создаём временный объект как если бы это был из БД
+                db_content = {
+                    'content': found_menu.get('text', 'Нет описания'),
+                    'photo_file_id': None,
+                    'buttons_json': None,
+                    'parent_id': None
+                }
+
+                # Если есть submenu - создаём кнопки
+                if found_menu.get('type') == 'inline' and found_menu.get('submenu'):
+                    buttons = []
+                    for sub_id, sub_data in found_menu['submenu'].items():
+                        buttons.append({
+                            'text': sub_data.get('label', sub_id),
+                            'id': sub_id
+                        })
+                    db_content['buttons_json'] = json.dumps(buttons)
+                    print(f"[BOT_DEBUG_VERBOSE] Created {len(buttons)} buttons from MENU_STRUCTURE submenu")
+
+                # Если есть buttons - добавляем их
+                elif found_menu.get('buttons'):
+                    buttons = []
+                    for btn in found_menu['buttons']:
+                        if btn.get('url'):
+                            buttons.append({'text': btn['text'], 'url': btn['url']})
+                        elif btn.get('callback'):
+                            # Извлекаем ID из callback (inline_xxx -> xxx)
+                            callback_id = btn['callback'].replace('inline_', '')
+                            buttons.append({'text': btn['text'], 'id': callback_id})
+                    db_content['buttons_json'] = json.dumps(buttons)
+                    print(f"[BOT_DEBUG_VERBOSE] Created {len(buttons)} buttons from MENU_STRUCTURE buttons array")
+
     if db_content:
         print(f"[BOT_DEBUG_VERBOSE] ✅ SUCCESS: Content found for '{button_id}'")
         print(f"[BOT_DEBUG_VERBOSE] DB Parent ID: '{db_content.get('parent_id')}'")
