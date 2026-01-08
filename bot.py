@@ -61,6 +61,12 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
 
+# Helper function to send messages without link preview
+async def send_message(message_obj, text, **kwargs):
+    """Отправка сообщения без предпросмотра ссылок"""
+    if 'link_preview_options' not in kwargs:
+        kwargs['link_preview_options'] = LinkPreviewOptions(is_disabled=True)
+    return await message_obj.answer(text, **kwargs)
 
 class AdminMenuStates(StatesGroup):
     main = State()
@@ -1168,9 +1174,28 @@ async def rename_inline_button(button_label: str, button_to_rename: dict, new_na
                     b['text'] = new_name
                     break
         else:
-            # Для статических кнопок - пока не поддерживаем
-            # Так как они в MENU_STRUCTURE и требуют изменения кода
-            return False
+            # Для статических кнопок - создаем override в БД
+            # Находим статическую кнопку и добавляем её с новым именем
+            button_found = False
+            for b in buttons:
+                if b.get('text') == button_to_rename['text']:
+                    b['text'] = new_name
+                    button_found = True
+                    break
+
+            # Если кнопка не найдена в БД списке (только статическая)
+            if not button_found:
+                # Добавляем переименованную кнопку в БД
+                if button_to_rename.get('type') == '🔗 URL':
+                    buttons.append({
+                        'text': new_name,
+                        'url': button_to_rename.get('url', '')
+                    })
+                else:
+                    buttons.append({
+                        'text': new_name,
+                        'id': button_to_rename.get('id', '')
+                    })
 
         # Сохраняем обновленный список
         success = await update_button_content(
@@ -1372,6 +1397,7 @@ async def content_editor_select(message: types.Message, state: FSMContext):
     kb = [
         [KeyboardButton(text="📝 Изменить текст")],
         [KeyboardButton(text="🖼 Изменить фото")],
+        [KeyboardButton(text="✏️ Переименовать кнопку")],
     ]
 
     # Добавляем каждую инлайн-кнопку как отдельную кнопку в клавиатуре
@@ -1561,6 +1587,53 @@ async def content_editor_save_text(message: types.Message, state: FSMContext):
 
     await state.clear()
     await admin_button(message, state)
+
+@router.message(ContentEditorStates.selecting_menu, F.text == "✏️ Переименовать кнопку")
+async def content_editor_rename_keyboard_button_start(message: types.Message, state: FSMContext):
+    """Начало переименования кнопки клавиатуры"""
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+
+    await state.set_state(ContentEditorStates.editing_keyboard_button_name)
+    await message.answer(
+        f"✏️ <b>Переименование кнопки</b>\n\n"
+        f"Текущее название: <b>{button_label}</b>\n\n"
+        f"Введите новое название для кнопки:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Отмена")]],
+            resize_keyboard=True
+        ),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(ContentEditorStates.editing_keyboard_button_name)
+async def content_editor_rename_keyboard_button_save(message: types.Message, state: FSMContext):
+    """Сохранение нового названия кнопки клавиатуры"""
+    if message.text == "⬅️ Отмена":
+        await state.set_state(ContentEditorStates.selecting_menu)
+        return await content_editor_start(message, state)
+
+    new_name = message.text.strip()
+    if not new_name:
+        await message.answer("❌ Название не может быть пустым")
+        return
+
+    data = await state.get_data()
+    old_label = data.get('editing_button_label')
+
+    # Переименовываем в БД
+    success = await rename_keyboard_button(old_label, new_name)
+
+    if success:
+        await message.answer(f"✅ Кнопка переименована: '{old_label}' → '{new_name}'")
+        await state.update_data(editing_button_label=new_name)
+
+        # Показываем обновленный редактор
+        await state.set_state(ContentEditorStates.selecting_menu)
+        fake_msg = message.model_copy(update={"text": f"📝 {new_name}"})
+        return await content_editor_select(fake_msg, state)
+    else:
+        await message.answer("❌ Ошибка при переименовании кнопки")
 
 @router.message(ContentEditorStates.selecting_menu, F.text == "➕ Добавить инлайн-кнопку")
 async def content_editor_add_inline_button_start(message: types.Message, state: FSMContext):
@@ -3616,40 +3689,69 @@ async def callback_inline_button(query: types.CallbackQuery,
 
     logger.debug(f"parent_key: {parent_key}, sub_key: {sub_key}")
 
-    # Deep search function to find menu data by key and track hierarchy
-    def find_hierarchy(submenu_data, target_key, path=None):
-        if path is None: path = []
-        if not submenu_data:
-            return None
-        if target_key in submenu_data:
-            return {"menu": submenu_data[target_key], "path": path}
-        for key, value in submenu_data.items():
-            if isinstance(value, dict) and "submenu" in value:
-                res = find_hierarchy(value["submenu"], target_key,
-                                     path + [key])
-                if res:
-                    return res
-        return None
-
+    # Сначала пробуем найти в БД
+    db_content = await get_button_content(sub_key)
+    found_menu = None
     found_hierarchy = None
     top_parent = ""
-    for menu_key, menu_data in MENU_STRUCTURE.items():
-        if "submenu" in menu_data:
-            found_hierarchy = find_hierarchy(menu_data["submenu"], sub_key)
-            if found_hierarchy:
-                top_parent = menu_key
-                break
+    path = []
+    effective_parent = parent_key if parent_key else "nav"
 
-    if not found_hierarchy:
-        logger.warning(f"Menu not found for sub_key: {sub_key}")
-        await query.answer("Раздел не найден", show_alert=True)
-        return
+    if db_content:
+        # Нашли в БД - используем контент из БД
+        logger.debug(f"Found content in DB for {sub_key}")
+        found_menu = {
+            'label': sub_key,
+            'text': db_content.get('content', 'Нет описания'),
+            'type': 'db_content'
+        }
 
-    found_menu = found_hierarchy["menu"]
-    path = found_hierarchy["path"]
+        # Добавляем инлайн-кнопки из БД если есть
+        if db_content.get('buttons_json'):
+            try:
+                buttons = json.loads(db_content['buttons_json'])
+                if buttons:
+                    found_menu['type'] = 'inline'
+                    found_menu['db_buttons'] = buttons  # Сохраняем кнопки из БД
+            except:
+                pass
 
-    # Log click statistics
-    await log_click(found_menu.get('label', sub_key))
+        # Логируем клик
+        await log_click(sub_key)
+    else:
+        # Если в БД нет - ищем в MENU_STRUCTURE
+        # Deep search function to find menu data by key and track hierarchy
+        def find_hierarchy(submenu_data, target_key, path=None):
+            if path is None: path = []
+            if not submenu_data:
+                return None
+            if target_key in submenu_data:
+                return {"menu": submenu_data[target_key], "path": path}
+            for key, value in submenu_data.items():
+                if isinstance(value, dict) and "submenu" in value:
+                    res = find_hierarchy(value["submenu"], target_key,
+                                         path + [key])
+                    if res:
+                        return res
+            return None
+
+        for menu_key, menu_data in MENU_STRUCTURE.items():
+            if "submenu" in menu_data:
+                found_hierarchy = find_hierarchy(menu_data["submenu"], sub_key)
+                if found_hierarchy:
+                    top_parent = menu_key
+                    break
+
+        if not found_hierarchy:
+            logger.warning(f"Menu not found for sub_key: {sub_key}")
+            await query.answer("Раздел не найден", show_alert=True)
+            return
+
+        found_menu = found_hierarchy["menu"]
+        path = found_hierarchy["path"]
+
+        # Log click statistics
+        await log_click(found_menu.get('label', sub_key))
 
     # Determine the real parent for the back button
     if path:
@@ -3679,6 +3781,28 @@ async def callback_inline_button(query: types.CallbackQuery,
             logger.debug("Using pages content")
             text_content = found_menu['pages'][0].get('text', 'Нет описания')
             keyboard = get_nav_keyboard_inline('', sub_key, 0)
+        elif found_menu.get("type") == "inline" and "db_buttons" in found_menu:
+            # Контент из БД с инлайн-кнопками
+            logger.debug("Using DB inline buttons")
+            text_content = found_menu.get('text', 'Выберите опцию:')
+            buttons_list = []
+            for btn in found_menu['db_buttons']:
+                if btn.get('url'):
+                    buttons_list.append([
+                        InlineKeyboardButton(text=btn['text'], url=btn['url'])
+                    ])
+                else:
+                    # Submenu button
+                    callback_str = f"inline_{btn.get('id', btn['text'])}"
+                    buttons_list.append([
+                        InlineKeyboardButton(text=btn['text'], callback_data=callback_str)
+                    ])
+            # Добавляем кнопку назад
+            back_callback = f"back_inline:{effective_parent}"
+            buttons_list.append([
+                InlineKeyboardButton(text="🔙 Назад", callback_data=back_callback)
+            ])
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons_list)
         elif found_menu.get("type") == "inline" and "submenu" in found_menu:
             logger.debug("Using inline submenu")
             text_content = found_menu.get('text', 'Выберите опцию:')
@@ -3754,6 +3878,41 @@ async def callback_inline_button(query: types.CallbackQuery,
                 link_preview_options=LinkPreviewOptions(is_disabled=True))
         except Exception as e:
             logger.error(f"Error editing message in pages: {e}")
+            try:
+                await query.answer("Ошибка при редактировании сообщения",
+                                   show_alert=True)
+            except:
+                pass
+    # Check if the found menu item itself has DB inline buttons
+    elif found_menu.get("type") == "inline" and "db_buttons" in found_menu:
+        # Контент из БД с инлайн-кнопками
+        text_content = found_menu.get('text', 'Выберите опцию:')
+        buttons_list = []
+        for btn in found_menu['db_buttons']:
+            if btn.get('url'):
+                buttons_list.append([
+                    InlineKeyboardButton(text=btn['text'], url=btn['url'])
+                ])
+            else:
+                # Submenu button
+                callback_str = f"inline_{btn.get('id', btn['text'])}"
+                buttons_list.append([
+                    InlineKeyboardButton(text=btn['text'], callback_data=callback_str)
+                ])
+        # Добавляем кнопку назад
+        back_callback = f"back_inline:{effective_parent}"
+        buttons_list.append([
+            InlineKeyboardButton(text="🔙 Назад", callback_data=back_callback)
+        ])
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons_list)
+        try:
+            await query.message.edit_text(
+                text_content,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=LinkPreviewOptions(is_disabled=True))
+        except Exception as e:
+            logger.error(f"Error editing message with DB buttons: {e}")
             try:
                 await query.answer("Ошибка при редактировании сообщения",
                                    show_alert=True)
