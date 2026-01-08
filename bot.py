@@ -3007,7 +3007,8 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
                 )
             else:
                 print(f"[BOT_DEBUG_VERBOSE] Updating message as Text")
-                await query.message.edit_text(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                await query.message.edit_text(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML,
+                                            link_preview_options=LinkPreviewOptions(is_disabled=True))
             print(f"[BOT_DEBUG_VERBOSE] ✅ Message updated successfully")
         except Exception as e:
             if "message is not modified" in str(e):
@@ -3018,7 +3019,8 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
                 if photo:
                     await query.message.answer_photo(photo, caption=msg_text, reply_markup=kb, parse_mode=ParseMode.HTML)
                 else:
-                    await query.message.answer(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                    await query.message.answer(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML,
+                                             link_preview_options=LinkPreviewOptions(is_disabled=True))
     else:
         print(f"[BOT_DEBUG_VERBOSE] ❌ FAIL: Content NOT found in DB for ID: '{button_id}'")
         await query.answer("❌ Раздел не найден в базе данных", show_alert=True)
@@ -4460,7 +4462,8 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                 await message.answer_photo(photo, caption=msg_text, reply_markup=kb, parse_mode=ParseMode.HTML)
             else:
                 print(f"[BOT_DEBUG_VERBOSE] Sending Text response")
-                await message.answer(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                await message.answer(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML,
+                                   link_preview_options=LinkPreviewOptions(is_disabled=True))
             return True
         else:
             print(f"[BOT_DEBUG_VERBOSE] ❌ FAIL: Button '{label}' not found in button_content table after all attempts")
@@ -4476,6 +4479,20 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
             print(f"[BOT_DEBUG] Found static match: {key}")
             await log_click(item.get('label'))
 
+            # Проверяем есть ли override в БД
+            db_content = await get_button_content(key)
+
+            # Определяем текст: из БД если есть, иначе из статики
+            if db_content and db_content.get('content'):
+                msg_text = db_content['content']
+                print(f"[BOT_DEBUG] Using text from DB override")
+            elif 'pages' in item:
+                msg_text = item['pages'][0]['text']
+                print(f"[BOT_DEBUG] Using text from static pages")
+            else:
+                msg_text = item['text']
+                print(f"[BOT_DEBUG] Using text from static item")
+
             # Собираем инлайн-кнопки из обоих источников
             inline_keyboard_list = []
 
@@ -4487,7 +4504,6 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                     ])
 
             # 2. Затем добавляем кнопки из БД (если есть)
-            db_content = await get_button_content(key)
             if db_content and db_content.get('buttons_json'):
                 print(f"[BOT_DEBUG] Found DB inline buttons for static menu '{key}'")
                 try:
@@ -4505,12 +4521,15 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
             # Формируем ответ
             if inline_keyboard_list:
                 kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard_list)
-                await message.answer(item['text'], reply_markup=kb, parse_mode=ParseMode.HTML)
+                await message.answer(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML,
+                                   link_preview_options=LinkPreviewOptions(is_disabled=True))
             elif 'pages' in item:
                 kb = get_nav_keyboard_inline(key, "", 0)
-                await message.answer(item['pages'][0]['text'], reply_markup=kb, parse_mode=ParseMode.HTML)
+                await message.answer(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML,
+                                   link_preview_options=LinkPreviewOptions(is_disabled=True))
             else:
-                await message.answer(item['text'], parse_mode=ParseMode.HTML)
+                await message.answer(msg_text, parse_mode=ParseMode.HTML,
+                                   link_preview_options=LinkPreviewOptions(is_disabled=True))
             return True
 
     print(f"[BOT_DEBUG] === handle_dynamic_buttons End (No Match) ===")
