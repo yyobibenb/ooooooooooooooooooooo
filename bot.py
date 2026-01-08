@@ -403,6 +403,10 @@ async def admin_button(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await message.answer("У вас нет доступа к админ-панели.")
         return
+
+    # Очищаем состояние при входе в админ-панель
+    await state.clear()
+
     admin_keyboard = ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="📢 Рассылка")],
                   [KeyboardButton(text="📊 Статистика")],
@@ -430,6 +434,10 @@ class AdminMenuStates(StatesGroup):
 @router.message(F.text == "🏗 Управление меню")
 async def manage_menu(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
+
+    # Очищаем состояние при входе в управление меню
+    await state.clear()
+
     buttons = await get_all_keyboard_buttons()
     text = "🏗 <b>Управление меню</b>\n\nВыберите кнопку для управления или создайте новую."
     kb = []
@@ -1018,6 +1026,9 @@ async def content_editor_start(message: types.Message, state: FSMContext):
     """Главное меню редактора контента - показываем статические кнопки и кнопки из БД"""
     if message.from_user.id != ADMIN_ID:
         return
+
+    # Очищаем состояние при входе в редактор контента
+    await state.clear()
 
     # Формируем список кнопок для выбора
     kb = []
@@ -3077,12 +3088,20 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
 
                 # Создаём список кнопок
                 button_objects = []
+                has_back_button = False  # Отслеживаем наличие кнопки назад в buttons_json
+
                 for i, b in enumerate(btns):
                     btn_text = b.get('text', '???')
                     row_width = b.get('row_width', default_buttons_per_row)
                     print(f"[BOT_DEBUG_VERBOSE] Button {i+1}: '{btn_text}' (row_width={row_width})")
 
-                    if b.get('url') and b.get('url') != 'меню':
+                    # Проверяем на кнопку назад из миграции (url='меню')
+                    if b.get('url') == 'меню' or btn_text in ['🔙 Назад', '🔙 В начало']:
+                        has_back_button = True
+                        print(f"[BOT_DEBUG_VERBOSE] -> Found back button in buttons_json: '{btn_text}', skipping (will add based on parent_id)")
+                        continue  # Пропускаем старые кнопки назад
+
+                    if b.get('url'):
                         print(f"[BOT_DEBUG_VERBOSE] -> URL: {b['url']}")
                         button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
                     else:
@@ -3094,7 +3113,7 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
                 # Группируем кнопки с учётом индивидуальной ширины
                 inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
 
-                # Кнопка назад
+                # Добавляем кнопку назад (всегда, независимо от того что было в buttons_json)
                 if db_content.get('parent_id'):
                     parent_id = db_content['parent_id']
                     print(f"[BOT_DEBUG_VERBOSE] Adding 'Back' button -> dyn:{parent_id}")
@@ -4553,12 +4572,20 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
 
                     # Создаём список кнопок
                     button_objects = []
+                    has_back_button = False  # Отслеживаем наличие кнопки назад в buttons_json
+
                     for i, b in enumerate(btns):
                         btn_text = b.get('text', '???')
                         row_width = b.get('row_width', default_buttons_per_row)
                         print(f"[BOT_DEBUG_VERBOSE] Button {i+1}: '{btn_text}' (row_width={row_width})")
 
-                        if b.get('url') and b.get('url') != 'меню':
+                        # Проверяем на кнопку назад из миграции (url='меню')
+                        if b.get('url') == 'меню' or btn_text in ['🔙 Назад', '🔙 В начало']:
+                            has_back_button = True
+                            print(f"[BOT_DEBUG_VERBOSE] -> Found back button in buttons_json: '{btn_text}', skipping (will add based on parent_id)")
+                            continue  # Пропускаем старые кнопки назад
+
+                        if b.get('url'):
                             print(f"[BOT_DEBUG_VERBOSE] -> URL: {b['url']}")
                             button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
                         else:
@@ -4569,6 +4596,7 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                     # Группируем кнопки с учётом индивидуальной ширины
                     inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
 
+                    # Добавляем кнопку назад (всегда, независимо от того что было в buttons_json)
                     if db_content.get('parent_id'):
                         parent_id = db_content['parent_id']
                         print(f"[BOT_DEBUG_VERBOSE] Adding 'Back' button to parent: '{parent_id}'")
