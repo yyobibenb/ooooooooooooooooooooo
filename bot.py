@@ -4396,6 +4396,7 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
         db_content = await get_button_content(label)
 
         # Если не нашли, пробуем найти по всем зарегистрированным кнопкам клавиатуры
+        menu_key = None  # Ключ из MENU_STRUCTURE
         if not db_content:
             print(f"[BOT_DEBUG_VERBOSE] No exact match in button_content table for '{label}'")
             print(f"[BOT_DEBUG_VERBOSE] Fetching all registered keyboard labels...")
@@ -4406,11 +4407,14 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                 if b_lbl:
                     is_match = b_lbl.strip().lower() == label.strip().lower()
                     if is_match:
-                        print(f"[BOT_DEBUG_VERBOSE] ✅ Found fuzzy match: '{label}' -> '{b_lbl}'")
-                        db_content = await get_button_content(b_lbl)
+                        print(f"[BOT_DEBUG_VERBOSE] ✅ Found match in keyboard_buttons: '{label}' -> '{b_lbl}'")
+                        menu_key = b.get('menu_key') or b_lbl  # Берём menu_key если есть
+                        print(f"[BOT_DEBUG_VERBOSE] Menu key: '{menu_key}'")
+                        # Ищем контент по menu_key (ключ из MENU_STRUCTURE)
+                        db_content = await get_button_content(menu_key)
                         if db_content:
-                            print(f"[BOT_DEBUG_VERBOSE] Successfully fetched content for fuzzy match '{b_lbl}'")
-                            break
+                            print(f"[BOT_DEBUG_VERBOSE] Successfully fetched content for menu_key '{menu_key}'")
+                        break
                     else:
                         # Log non-matches only in very verbose mode or skip
                         pass
@@ -4467,6 +4471,9 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
             return True
         else:
             print(f"[BOT_DEBUG_VERBOSE] ❌ FAIL: Button '{label}' not found in button_content table after all attempts")
+            # Если есть menu_key, попробуем найти в MENU_STRUCTURE
+            if menu_key:
+                print(f"[BOT_DEBUG_VERBOSE] Trying to find in MENU_STRUCTURE by menu_key: '{menu_key}'")
     except Exception as e:
         print(f"[BOT_DEBUG_VERBOSE] ❌ CRITICAL ERROR in handle_dynamic_buttons: {e}")
         import traceback
@@ -4474,8 +4481,14 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
 
     # 2. Проверяем статическую структуру меню
     print(f"[BOT_DEBUG] Step 2: Checking static menu structure")
+
+    # Используем menu_key если есть, иначе label
+    search_key = menu_key if menu_key else label
+    print(f"[BOT_DEBUG] Search key: '{search_key}'")
+
     for key, item in MENU_STRUCTURE.items():
-        if label.strip().lower() == item.get('label', '').strip().lower():
+        # Ищем по ключу (menu_key) или по label
+        if key == search_key or label.strip().lower() == item.get('label', '').strip().lower():
             print(f"[BOT_DEBUG] Found static match: {key}")
             await log_click(item.get('label'))
 

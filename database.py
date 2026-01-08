@@ -89,10 +89,17 @@ async def init_db():
                 CREATE TABLE IF NOT EXISTS keyboard_buttons (
                     id SERIAL PRIMARY KEY,
                     label VARCHAR(255) UNIQUE NOT NULL,
+                    menu_key VARCHAR(255),
                     row_index INT DEFAULT 0,
                     col_index INT DEFAULT 0
                 )
             ''')
+
+            # Migration: add menu_key if it doesn't exist
+            try:
+                await conn.execute('ALTER TABLE keyboard_buttons ADD COLUMN IF NOT EXISTS menu_key VARCHAR(255)')
+            except:
+                pass
 
         print("✓ Database initialized successfully")
     except Exception as e:
@@ -246,24 +253,27 @@ async def get_all_keyboard_buttons():
     try:
         async with pool.acquire() as conn:
             # Возвращаем список словарей для консистентности
-            rows = await conn.fetch('SELECT label FROM keyboard_buttons ORDER BY row_index, col_index')
+            rows = await conn.fetch('SELECT label, menu_key FROM keyboard_buttons ORDER BY row_index, col_index')
             return [dict(r) for r in rows]
     except Exception as e:
         print(f"[DB_DEBUG] ❌ Error getting keyboard buttons: {e}")
         return []
 
-async def add_keyboard_button(label, row=0, col=0):
+async def add_keyboard_button(label, row=0, col=0, menu_key=None):
     """Add a new keyboard button"""
     if pool is None:
         print("Database pool not initialized. Skipping add_keyboard_button.")
         return False
     try:
         async with pool.acquire() as conn:
+            # Если menu_key не передан, используем label как ключ
+            if menu_key is None:
+                menu_key = label
             await conn.execute('''
-                INSERT INTO keyboard_buttons (label, row_index, col_index)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (label) DO UPDATE SET row_index = $2, col_index = $3
-            ''', label, row, col)
+                INSERT INTO keyboard_buttons (label, menu_key, row_index, col_index)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (label) DO UPDATE SET menu_key = $2, row_index = $3, col_index = $4
+            ''', label, menu_key, row, col)
             return True
     except Exception as e:
         print(f"Error adding keyboard button: {e}")
@@ -285,17 +295,16 @@ async def delete_keyboard_button(label):
         return False
 
 async def rename_keyboard_button(old_label, new_label):
-    """Rename a keyboard button and update its content reference"""
+    """Rename a keyboard button (only updates label, keeps menu_key intact)"""
     if pool is None:
         print("Database pool not initialized. Skipping rename_keyboard_button.")
         return False
     try:
         async with pool.acquire() as conn:
-            async with conn.transaction():
-                # Обновляем запись в keyboard_buttons
-                await conn.execute('UPDATE keyboard_buttons SET label = $1 WHERE label = $2', new_label, old_label)
-                # Обновляем button_id в button_content
-                await conn.execute('UPDATE button_content SET button_id = $1 WHERE button_id = $2', new_label, old_label)
+            # Обновляем только label в keyboard_buttons
+            # menu_key остаётся прежним (ключ из MENU_STRUCTURE)
+            # button_id в button_content тоже не трогаем
+            await conn.execute('UPDATE keyboard_buttons SET label = $1 WHERE label = $2', new_label, old_label)
             return True
     except Exception as e:
         print(f"Error renaming keyboard button: {e}")
