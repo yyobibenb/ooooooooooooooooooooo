@@ -68,22 +68,57 @@ async def send_message(message_obj, text, **kwargs):
         kwargs['link_preview_options'] = LinkPreviewOptions(is_disabled=True)
     return await message_obj.answer(text, **kwargs)
 
-def group_buttons_by_row(buttons, buttons_per_row=1):
-    """Группирует кнопки по N штук в ряду"""
-    if buttons_per_row <= 0:
-        buttons_per_row = 1
+def group_buttons_by_row(buttons, buttons_data=None, default_per_row=1):
+    """
+    Группирует кнопки по рядам с учётом индивидуальной ширины каждой кнопки.
+
+    buttons_data: список словарей с информацией о кнопках (включая row_width)
+    row_width: сколько таких кнопок помещается в ряд (1=на весь ряд, 2=половина, 3=треть, 4=четверть)
+    """
+    if not buttons:
+        return []
 
     grouped = []
-    row = []
-    for btn in buttons:
-        row.append(btn)
-        if len(row) >= buttons_per_row:
-            grouped.append(row)
-            row = []
+    current_row = []
+    current_row_capacity = 0  # Сколько уже занято в текущем ряду (в единицах 1/4)
+
+    for i, btn in enumerate(buttons):
+        # Определяем ширину этой кнопки
+        row_width = default_per_row
+        if buttons_data and i < len(buttons_data):
+            row_width = buttons_data[i].get('row_width', default_per_row)
+
+        # Конвертируем row_width в единицы занимаемого места (в четвертях ряда)
+        # row_width=1 означает кнопка на весь ряд (4/4), 2 = половина (2/4), 3 = треть (≈1.33/4), 4 = четверть (1/4)
+        if row_width == 1:
+            btn_size = 4  # На весь ряд
+        elif row_width == 2:
+            btn_size = 2  # Половина ряда
+        elif row_width == 3:
+            btn_size = 1.33  # Треть ряда (примерно)
+        elif row_width == 4:
+            btn_size = 1  # Четверть ряда
+        else:
+            btn_size = 4 / row_width  # Общая формула
+
+        # Если кнопка не помещается в текущий ряд, начинаем новый
+        if current_row and (current_row_capacity + btn_size > 4.1):  # 4.1 для допуска погрешности
+            grouped.append(current_row)
+            current_row = []
+            current_row_capacity = 0
+
+        current_row.append(btn)
+        current_row_capacity += btn_size
+
+        # Если ряд заполнен или это кнопка на весь ряд, закрываем ряд
+        if current_row_capacity >= 3.9 or row_width == 1:  # 3.9 для допуска погрешности
+            grouped.append(current_row)
+            current_row = []
+            current_row_capacity = 0
 
     # Добавляем остаток
-    if row:
-        grouped.append(row)
+    if current_row:
+        grouped.append(current_row)
 
     return grouped
 
@@ -121,6 +156,7 @@ class ContentEditorStates(StatesGroup):
     waiting_button_text = State()     # Ожидание текста кнопки
     waiting_button_url = State()      # Ожидание URL кнопки
     waiting_submenu_content = State() # Ожидание текста для нового подменю
+    waiting_button_width = State()    # Ожидание выбора ширины кнопки
     managing_inline_buttons = State()  # Управление инлайн-кнопками (удаление, редактирование)
     editing_inline_button_name = State()  # Редактирование названия инлайн-кнопки
     editing_keyboard_button_name = State()  # Редактирование названия кнопки клавиатуры
@@ -1498,6 +1534,7 @@ async def content_editor_manage_inline_button(message: types.Message, state: FSM
         kb.append([KeyboardButton(text="📂 Открыть подменю")])
 
     kb.append([KeyboardButton(text="✏️ Переименовать")])
+    kb.append([KeyboardButton(text="⚙️ Изменить ширину")])
     kb.append([KeyboardButton(text="🗑 Удалить")])
     kb.append([KeyboardButton(text="⬅️ Назад")])
 
@@ -1850,26 +1887,34 @@ async def content_editor_submenu_content_received(message: types.Message, state:
         except:
             buttons = []
 
-        # Добавляем новую кнопку к существующим
-        buttons.append({
-            'text': button_text,
-            'id': submenu_id
-        })
-
-        # Сохраняем обновленные кнопки в родительском меню
-        success = await update_button_content(
-            button_label,
-            db_content.get('content'),
-            db_content.get('photo_file_id'),
-            json.dumps(buttons),
-            db_content.get('parse_mode', 'HTML'),
-            db_content.get('parent_id')
+        # Сначала спрашиваем о ширине кнопки перед добавлением
+        await state.update_data(
+            submenu_id=submenu_id,
+            submenu_content=submenu_content,
+            adding_new_button=True,
+            button_type='menu'
         )
+        await state.set_state(ContentEditorStates.waiting_button_width)
 
-        if not success:
-            await message.answer("❌ Ошибка при добавлении кнопки")
-            await state.clear()
-            return await admin_button(message, state)
+        kb = [
+            [KeyboardButton(text="1️⃣ На весь ряд (большая)")],
+            [KeyboardButton(text="2️⃣ По 2 в ряду")],
+            [KeyboardButton(text="3️⃣ По 3 в ряду")],
+            [KeyboardButton(text="4️⃣ По 4 в ряду")],
+            [KeyboardButton(text="⬅️ Отмена")]
+        ]
+
+        await message.answer(
+            f"⚙️ <b>Ширина кнопки '{button_text}'</b>\n\n"
+            f"Выберите сколько таких кнопок помещается в один ряд:\n"
+            f"• <b>1</b> - кнопка на весь ряд (большая)\n"
+            f"• <b>2</b> - по 2 кнопки в ряду (половина)\n"
+            f"• <b>3</b> - по 3 кнопки в ряду (треть)\n"
+            f"• <b>4</b> - по 4 кнопки в ряду (маленькая)",
+            reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+            parse_mode=ParseMode.HTML
+        )
+        return
     else:
         # Если контента нет в БД (статическое меню), создаем новый контент
         has_static_menu = data.get('has_static_menu', False)
@@ -2035,27 +2080,30 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
                 else:
                     await message.answer("❌ Кнопка не найдена")
         else:
-            # Добавляем новую кнопку
+            # Добавляем новую кнопку - сначала спрашиваем о ширине
             button_text = data.get('button_text')
-            buttons.append({
-                'text': button_text,
-                'url': button_url
-            })
+            await state.update_data(button_url=button_url, adding_new_button=True)
+            await state.set_state(ContentEditorStates.waiting_button_width)
 
-            # Сохраняем
-            success = await update_button_content(
-                button_label,
-                db_content.get('content'),
-                db_content.get('photo_file_id'),
-                json.dumps(buttons),
-                db_content.get('parse_mode', 'HTML'),
-                db_content.get('parent_id')
+            kb = [
+                [KeyboardButton(text="1️⃣ На весь ряд (большая)")],
+                [KeyboardButton(text="2️⃣ По 2 в ряду")],
+                [KeyboardButton(text="3️⃣ По 3 в ряду")],
+                [KeyboardButton(text="4️⃣ По 4 в ряду")],
+                [KeyboardButton(text="⬅️ Отмена")]
+            ]
+
+            await message.answer(
+                f"⚙️ <b>Ширина кнопки '{button_text}'</b>\n\n"
+                f"Выберите сколько таких кнопок помещается в один ряд:\n"
+                f"• <b>1</b> - кнопка на весь ряд (большая)\n"
+                f"• <b>2</b> - по 2 кнопки в ряду (половина)\n"
+                f"• <b>3</b> - по 3 кнопки в ряду (треть)\n"
+                f"• <b>4</b> - по 4 кнопки в ряду (маленькая)",
+                reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+                parse_mode=ParseMode.HTML
             )
-
-            if success:
-                await message.answer(f"✅ Кнопка-ссылка '{button_text}' добавлена!")
-            else:
-                await message.answer("❌ Ошибка при добавлении")
+            return
     else:
         # Если контента нет в БД (статическое меню), создаем новый контент
         has_static_menu = data.get('has_static_menu', False)
@@ -2135,6 +2183,214 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
                 await message.answer(f"✅ Кнопка-ссылка добавлена!")
         else:
             await message.answer("❌ Ошибка при создании контента в БД")
+
+    await state.clear()
+    await admin_button(message, state)
+
+@router.message(ContentEditorStates.waiting_button_width)
+async def content_editor_button_width_received(message: types.Message, state: FSMContext):
+    """Получен выбор ширины кнопки"""
+    if message.text == "⬅️ Отмена":
+        await state.set_state(ContentEditorStates.selecting_menu)
+        return await content_editor_start(message, state)
+
+    # Определяем row_width из выбора пользователя
+    width_map = {
+        "1️⃣ На весь ряд (большая)": 1,
+        "2️⃣ По 2 в ряду": 2,
+        "3️⃣ По 3 в ряду": 3,
+        "4️⃣ По 4 в ряду": 4
+    }
+
+    row_width = width_map.get(message.text)
+    if not row_width:
+        await message.answer("❌ Неверный выбор")
+        return
+
+    # Получаем данные из state
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+    editing_existing = data.get('editing_button_width', False)
+
+    # Если изменяем существующую кнопку
+    if editing_existing:
+        selected_button = data.get('selected_inline_button')
+        if not selected_button:
+            await message.answer("❌ Кнопка не найдена")
+            return
+
+        # Получаем контент из БД
+        db_content = await get_button_content(button_label)
+
+        if db_content and db_content.get('buttons_json'):
+            try:
+                buttons = json.loads(db_content['buttons_json'])
+
+                # Находим кнопку и меняем её row_width
+                button_found = False
+                for btn in buttons:
+                    if btn.get('text') == selected_button['text']:
+                        btn['row_width'] = row_width
+                        button_found = True
+                        break
+
+                if button_found:
+                    # Сохраняем
+                    success = await update_button_content(
+                        button_label,
+                        db_content.get('content'),
+                        db_content.get('photo_file_id'),
+                        json.dumps(buttons),
+                        db_content.get('parse_mode', 'HTML'),
+                        db_content.get('parent_id')
+                    )
+
+                    if success:
+                        width_text = {1: "на весь ряд", 2: "по 2 в ряду", 3: "по 3 в ряду", 4: "по 4 в ряду"}
+                        await message.answer(f"✅ Ширина кнопки '{selected_button['text']}' изменена на '{width_text[row_width]}'!")
+                        await state.set_state(ContentEditorStates.selecting_menu)
+                        fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
+                        return await content_editor_select(fake_msg, state)
+                    else:
+                        await message.answer("❌ Ошибка при сохранении")
+                        return
+                else:
+                    await message.answer("❌ Кнопка не найдена в БД")
+                    return
+            except Exception as e:
+                await message.answer(f"❌ Ошибка: {e}")
+                return
+        else:
+            await message.answer("❌ Контент не найден в БД")
+            return
+
+    # Иначе добавляем новую кнопку
+    button_text = data.get('button_text')
+    button_type = data.get('button_type', 'url')
+
+    # Получаем контент из БД
+    db_content = await get_button_content(button_label)
+
+    if db_content:
+        # Получаем текущие кнопки
+        try:
+            buttons = json.loads(db_content['buttons_json']) if db_content.get('buttons_json') else []
+        except:
+            buttons = []
+
+        # Создаем новую кнопку с row_width
+        if button_type == 'url':
+            button_url = data.get('button_url')
+            buttons.append({
+                'text': button_text,
+                'url': button_url,
+                'row_width': row_width
+            })
+        else:  # menu
+            submenu_id = data.get('submenu_id')
+            submenu_content = data.get('submenu_content')
+            buttons.append({
+                'text': button_text,
+                'id': submenu_id,
+                'row_width': row_width
+            })
+
+            # Создаем контент для подменю
+            await update_button_content(
+                submenu_id,
+                submenu_content,
+                None,  # photo_file_id
+                None,  # buttons_json
+                'HTML',
+                button_label  # parent_id
+            )
+
+        # Сохраняем обновленные кнопки родительского меню
+        success = await update_button_content(
+            button_label,
+            db_content.get('content'),
+            db_content.get('photo_file_id'),
+            json.dumps(buttons),
+            db_content.get('parse_mode', 'HTML'),
+            db_content.get('parent_id')
+        )
+
+        if success:
+            width_text = {1: "на весь ряд", 2: "по 2 в ряду", 3: "по 3 в ряду", 4: "по 4 в ряду"}
+            await message.answer(f"✅ Кнопка '{button_text}' добавлена ({width_text[row_width]})!")
+            await state.set_state(ContentEditorStates.selecting_menu)
+            fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
+            return await content_editor_select(fake_msg, state)
+        else:
+            await message.answer("❌ Ошибка при добавлении кнопки")
+    else:
+        # Если контента нет в БД (статическое меню), создаем новый контент
+        has_static_menu = data.get('has_static_menu', False)
+
+        if has_static_menu:
+            # Берем текст из статического меню и создаем с новой кнопкой
+            static_menu_info = find_static_menu_by_label(button_label)
+            if static_menu_info:
+                static_menu_data = static_menu_info['menu_data']
+                if 'pages' in static_menu_data and static_menu_data['pages']:
+                    text_content = static_menu_data['pages'][0].get('text', '')
+                else:
+                    text_content = static_menu_data.get('text', '')
+
+                # Копируем статические кнопки
+                buttons = []
+                if static_menu_data.get('type') == 'inline' and static_menu_data.get('submenu'):
+                    for submenu_key, submenu_data in static_menu_data['submenu'].items():
+                        buttons.append({
+                            'text': submenu_data.get('label', submenu_key),
+                            'id': submenu_key
+                        })
+
+                # Добавляем новую кнопку с row_width
+                if button_type == 'url':
+                    button_url = data.get('button_url')
+                    buttons.append({
+                        'text': button_text,
+                        'url': button_url,
+                        'row_width': row_width
+                    })
+                else:  # menu
+                    submenu_id = data.get('submenu_id')
+                    submenu_content = data.get('submenu_content')
+                    buttons.append({
+                        'text': button_text,
+                        'id': submenu_id,
+                        'row_width': row_width
+                    })
+
+                    # Создаем контент для подменю
+                    await update_button_content(
+                        submenu_id,
+                        submenu_content,
+                        None,
+                        None,
+                        'HTML',
+                        button_label
+                    )
+
+                # Сохраняем в БД
+                success = await update_button_content(
+                    button_label,
+                    text_content,
+                    None,
+                    json.dumps(buttons),
+                    'HTML',
+                    None
+                )
+
+                if success:
+                    width_text = {1: "на весь ряд", 2: "по 2 в ряду", 3: "по 3 в ряду", 4: "по 4 в ряду"}
+                    await message.answer(f"✅ Кнопка '{button_text}' добавлена ({width_text[row_width]})!")
+                    await state.set_state(ContentEditorStates.selecting_menu)
+                    fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
+                    return await content_editor_select(fake_msg, state)
+                else:
+                    await message.answer("❌ Ошибка при сохранении")
 
     await state.clear()
     await admin_button(message, state)
@@ -2223,6 +2479,56 @@ async def content_editor_rename_inline_button_save(message: types.Message, state
         return await content_editor_select(fake_msg, state)
     else:
         await message.answer("❌ Ошибка при переименовании кнопки")
+
+@router.message(ContentEditorStates.managing_inline_buttons, F.text == "⚙️ Изменить ширину")
+async def content_editor_change_button_width_start(message: types.Message, state: FSMContext):
+    """Начало изменения ширины инлайн-кнопки"""
+    data = await state.get_data()
+    selected_button = data.get('selected_inline_button')
+    button_label = data.get('editing_button_label')
+
+    if not selected_button:
+        await message.answer("❌ Кнопка не выбрана")
+        return
+
+    # Получаем текущую ширину кнопки
+    db_content = await get_button_content(button_label)
+    current_width = 1  # Дефолтное значение
+
+    if db_content and db_content.get('buttons_json'):
+        try:
+            buttons = json.loads(db_content['buttons_json'])
+            for btn in buttons:
+                if btn.get('text') == selected_button['text']:
+                    current_width = btn.get('row_width', 1)
+                    break
+        except:
+            pass
+
+    # Сохраняем в state что это изменение существующей кнопки
+    await state.update_data(editing_button_width=True)
+
+    kb = [
+        [KeyboardButton(text="1️⃣ На весь ряд (большая)")],
+        [KeyboardButton(text="2️⃣ По 2 в ряду")],
+        [KeyboardButton(text="3️⃣ По 3 в ряду")],
+        [KeyboardButton(text="4️⃣ По 4 в ряду")],
+        [KeyboardButton(text="⬅️ Отмена")]
+    ]
+
+    width_text = {1: "на весь ряд", 2: "по 2 в ряду", 3: "по 3 в ряду", 4: "по 4 в ряду"}
+    await state.set_state(ContentEditorStates.waiting_button_width)
+    await message.answer(
+        f"⚙️ <b>Ширина кнопки '{selected_button['text']}'</b>\n\n"
+        f"Текущая ширина: <b>{width_text.get(current_width, 'не задана')}</b>\n\n"
+        f"Выберите новую ширину:\n"
+        f"• <b>1</b> - кнопка на весь ряд (большая)\n"
+        f"• <b>2</b> - по 2 кнопки в ряду (половина)\n"
+        f"• <b>3</b> - по 3 кнопки в ряду (треть)\n"
+        f"• <b>4</b> - по 4 кнопки в ряду (маленькая)",
+        reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+        parse_mode=ParseMode.HTML
+    )
 
 @router.message(ContentEditorStates.managing_inline_buttons, F.text == "✏️ Изменить URL")
 async def content_editor_change_url_start(message: types.Message, state: FSMContext):
@@ -3078,25 +3384,28 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
                 btns = json.loads(db_content['buttons_json'])
                 print(f"[BOT_DEBUG_VERBOSE] Parsed {len(btns)} buttons from JSON")
 
-                # Получаем настройку расположения
-                buttons_per_row = db_content.get('buttons_per_row', 1)
-                print(f"[BOT_DEBUG_VERBOSE] Buttons per row: {buttons_per_row}")
+                # Получаем настройку расположения (старая система, используется как дефолт)
+                default_buttons_per_row = db_content.get('buttons_per_row', 1)
+                print(f"[BOT_DEBUG_VERBOSE] Default buttons per row: {default_buttons_per_row}")
 
                 # Создаём список кнопок
                 button_objects = []
                 for i, b in enumerate(btns):
                     btn_text = b.get('text', '???')
+                    row_width = b.get('row_width', default_buttons_per_row)
+                    print(f"[BOT_DEBUG_VERBOSE] Button {i+1}: '{btn_text}' (row_width={row_width})")
+
                     if b.get('url') and b.get('url') != 'меню':
-                        print(f"[BOT_DEBUG_VERBOSE] Inline Button {i+1}: '{btn_text}' -> URL: {b['url']}")
+                        print(f"[BOT_DEBUG_VERBOSE] -> URL: {b['url']}")
                         button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
                     else:
                         # Если ID не задан в JSON, формируем его
                         target_id = b.get('id') or f"{button_id}:{btn_text}"
-                        print(f"[BOT_DEBUG_VERBOSE] Inline Button {i+1}: '{btn_text}' -> Submenu ID: {target_id}")
+                        print(f"[BOT_DEBUG_VERBOSE] -> Submenu ID: {target_id}")
                         button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}"))
 
-                # Группируем кнопки по N в ряду
-                inline_keyboard_list = group_buttons_by_row(button_objects, buttons_per_row)
+                # Группируем кнопки с учётом индивидуальной ширины
+                inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
 
                 # Кнопка назад
                 if db_content.get('parent_id'):
@@ -4551,24 +4860,27 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                     btns = json.loads(db_content['buttons_json'])
                     print(f"[BOT_DEBUG_VERBOSE] Parsed {len(btns)} inline buttons")
 
-                    # Получаем настройку расположения
-                    buttons_per_row = db_content.get('buttons_per_row', 1)
-                    print(f"[BOT_DEBUG_VERBOSE] Buttons per row: {buttons_per_row}")
+                    # Получаем настройку расположения (старая система, используется как дефолт)
+                    default_buttons_per_row = db_content.get('buttons_per_row', 1)
+                    print(f"[BOT_DEBUG_VERBOSE] Default buttons per row: {default_buttons_per_row}")
 
                     # Создаём список кнопок
                     button_objects = []
                     for i, b in enumerate(btns):
                         btn_text = b.get('text', '???')
+                        row_width = b.get('row_width', default_buttons_per_row)
+                        print(f"[BOT_DEBUG_VERBOSE] Button {i+1}: '{btn_text}' (row_width={row_width})")
+
                         if b.get('url') and b.get('url') != 'меню':
-                            print(f"[BOT_DEBUG_VERBOSE] Inline Button {i+1}: '{btn_text}' -> URL: {b['url']}")
+                            print(f"[BOT_DEBUG_VERBOSE] -> URL: {b['url']}")
                             button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
                         else:
                             target_id = b.get('id') or f"{btn_id}:{btn_text}"
-                            print(f"[BOT_DEBUG_VERBOSE] Inline Button {i+1}: '{btn_text}' -> Submenu ID: {target_id}")
+                            print(f"[BOT_DEBUG_VERBOSE] -> Submenu ID: {target_id}")
                             button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}"))
 
-                    # Группируем кнопки по N в ряду
-                    inline_keyboard_list = group_buttons_by_row(button_objects, buttons_per_row)
+                    # Группируем кнопки с учётом индивидуальной ширины
+                    inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
 
                     if db_content.get('parent_id'):
                         parent_id = db_content['parent_id']
