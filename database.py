@@ -1,5 +1,6 @@
 import asyncpg
 import os
+import json
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -315,16 +316,65 @@ async def delete_keyboard_button(label):
         return False
 
 async def rename_keyboard_button(old_label, new_label):
-    """Rename a keyboard button (only updates label, keeps menu_key intact)"""
+    """Rename a keyboard button and update all related content"""
     if pool is None:
         print("Database pool not initialized. Skipping rename_keyboard_button.")
         return False
     try:
         async with pool.acquire() as conn:
-            # Обновляем только label в keyboard_buttons
+            # 1. Обновляем label в keyboard_buttons
             # menu_key остаётся прежним (ключ из MENU_STRUCTURE)
-            # button_id в button_content тоже не трогаем
             await conn.execute('UPDATE keyboard_buttons SET label = $1 WHERE label = $2', new_label, old_label)
+
+            # 2. Обновляем button_id в button_content
+            # Это важно чтобы контент был доступен по новому имени
+            await conn.execute('UPDATE button_content SET button_id = $1 WHERE button_id = $2', new_label, old_label)
+
+            # 3. Обновляем parent_id у всех дочерних элементов
+            # Если у этой кнопки были подменю, их parent_id тоже нужно обновить
+            await conn.execute('UPDATE button_content SET parent_id = $1 WHERE parent_id = $2', new_label, old_label)
+
+            # 4. Обновляем ID инлайн-кнопок в buttons_json
+            # Если эта кнопка упоминается как инлайн-кнопка в других меню
+            rows = await conn.fetch('SELECT button_id, buttons_json FROM button_content WHERE buttons_json IS NOT NULL')
+            for row in rows:
+                try:
+                    buttons = json.loads(row['buttons_json'])
+                    updated = False
+
+                    for btn in buttons:
+                        # Обновляем ID если он содержит старый label
+                        if btn.get('id'):
+                            # Проверяем точное совпадение или формат "parent:old_label"
+                            if btn['id'] == old_label:
+                                btn['id'] = new_label
+                                updated = True
+                            elif ':' in btn['id']:
+                                parts = btn['id'].split(':')
+                                # Обновляем каждую часть если она совпадает со старым label
+                                new_parts = [new_label if part == old_label else part for part in parts]
+                                new_id = ':'.join(new_parts)
+                                if new_id != btn['id']:
+                                    btn['id'] = new_id
+                                    updated = True
+
+                    if updated:
+                        new_json = json.dumps(buttons)
+                        await conn.execute(
+                            'UPDATE button_content SET buttons_json = $1 WHERE button_id = $2',
+                            new_json,
+                            row['button_id']
+                        )
+                        print(f"[DB_DEBUG] Updated buttons_json in '{row['button_id']}'")
+
+                except json.JSONDecodeError:
+                    pass
+
+            print(f"[DB_DEBUG] Renamed button: '{old_label}' -> '{new_label}'")
+            print(f"[DB_DEBUG] Updated button_id in button_content")
+            print(f"[DB_DEBUG] Updated parent_id for child items")
+            print(f"[DB_DEBUG] Updated inline button IDs in buttons_json")
+
             return True
     except Exception as e:
         print(f"Error renaming keyboard button: {e}")
