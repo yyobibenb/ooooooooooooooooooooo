@@ -1656,8 +1656,39 @@ async def content_editor_save_text(message: types.Message, state: FSMContext):
         else:
             await message.answer("❌ Ошибка при обновлении")
     else:
-        # Создаем новый контент
-        success = await update_button_content(button_label, new_text)
+        # Создаем новый контент для статической кнопки
+        # Проверяем, есть ли статическое меню
+        has_static_menu = data.get('has_static_menu', False)
+        buttons_json = None
+
+        if has_static_menu:
+            # Копируем инлайн-кнопки из статического меню
+            static_menu_info = find_static_menu_by_label(button_label)
+            if static_menu_info:
+                static_menu_data = static_menu_info['menu_data']
+                buttons = []
+
+                # Кнопки из submenu
+                if static_menu_data.get('type') == 'inline' and static_menu_data.get('submenu'):
+                    for submenu_key, submenu_data in static_menu_data['submenu'].items():
+                        buttons.append({
+                            'text': submenu_data.get('label', submenu_key),
+                            'id': submenu_key
+                        })
+
+                # Кнопки из buttons массива
+                if 'buttons' in static_menu_data:
+                    for btn in static_menu_data['buttons']:
+                        if btn.get('url'):
+                            buttons.append({
+                                'text': btn['text'],
+                                'url': btn['url']
+                            })
+
+                if buttons:
+                    buttons_json = json.dumps(buttons)
+
+        success = await update_button_content(button_label, new_text, None, buttons_json, 'HTML', None)
         if success:
             await message.answer("✅ Контент создан!")
         else:
