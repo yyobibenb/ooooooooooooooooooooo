@@ -1064,6 +1064,24 @@ async def content_editor_start(message: types.Message, state: FSMContext):
         parse_mode=ParseMode.HTML
     )
 
+@router.message(ContentEditorStates.selecting_menu, F.text == "📝 Изменить текст")
+async def content_editor_edit_text_handler(message: types.Message, state: FSMContext):
+    """Начало редактирования текста кнопки"""
+    await state.set_state(ContentEditorStates.editing_text)
+    await message.answer(
+        "✏️ <b>Редактирование текста</b>\n\n"
+        "Введите новый текст. Поддерживается HTML форматирование:\n"
+        "• <code>&lt;b&gt;жирный&lt;/b&gt;</code> → <b>жирный</b>\n"
+        "• <code>&lt;i&gt;курсив&lt;/i&gt;</code> → <i>курсив</i>\n"
+        "• <code>&lt;a href='URL'&gt;текст&lt;/a&gt;</code> → ссылка\n"
+        "• <code>&lt;code&gt;код&lt;/code&gt;</code> → <code>код</code>",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Отмена")]],
+            resize_keyboard=True
+        ),
+        parse_mode=ParseMode.HTML
+    )
+
 @router.message(ContentEditorStates.selecting_menu, F.text.startswith("📝 "))
 async def content_editor_select(message: types.Message, state: FSMContext):
     """Обработка выбора кнопки для редактирования"""
@@ -1241,24 +1259,6 @@ async def content_editor_goto_submenu(message: types.Message, state: FSMContext)
     # Показываем редактор для этого подменю
     fake_msg = message.model_copy(update={"text": f"📝 {goto_path}"})
     await content_editor_select(fake_msg, state)
-
-@router.message(ContentEditorStates.selecting_menu, F.text == "📝 Изменить текст")
-async def content_editor_edit_text(message: types.Message, state: FSMContext):
-    """Начало редактирования текста"""
-    await state.set_state(ContentEditorStates.editing_text)
-    await message.answer(
-        "✏️ <b>Редактирование текста</b>\n\n"
-        "Введите новый текст. Поддерживается HTML форматирование:\n"
-        "• <code>&lt;b&gt;жирный&lt;/b&gt;</code> → <b>жирный</b>\n"
-        "• <code>&lt;i&gt;курсив&lt;/i&gt;</code> → <i>курсив</i>\n"
-        "• <code>&lt;a href='URL'&gt;текст&lt;/a&gt;</code> → ссылка\n"
-        "• <code>&lt;code&gt;код&lt;/code&gt;</code> → <code>код</code>",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="⬅️ Отмена")]],
-            resize_keyboard=True
-        ),
-        parse_mode=ParseMode.HTML
-    )
 
 @router.message(ContentEditorStates.editing_text)
 async def content_editor_save_text(message: types.Message, state: FSMContext):
@@ -2450,14 +2450,13 @@ async def show_statistics(message: types.Message):
 
     # Keyboard buttons stats
     text += f"⌨️ <b>Топ нажатий на кнопки меню:</b>\n"
-    # Filter keyboard buttons from clicks (they are usually simple labels from MENU_STRUCTURE)
-    keyboard_labels = [m['label'] for m in MENU_STRUCTURE.values()]
-    # Also add nested submenu labels
-    for m in MENU_STRUCTURE.values():
-        if 'submenu' in m:
-            keyboard_labels.extend([sm['label'] for sm in m['submenu'].values()])
+    # После миграции все кнопки в БД, получаем их оттуда
+    keyboard_buttons = await get_all_keyboard_buttons()
+    keyboard_labels = [btn['label'] for btn in keyboard_buttons]
 
-    kb_clicks = [c for c in stats['clicks'] if c['button_name'] in keyboard_labels]
+    # Также добавляем все button_id из button_content (для инлайн кнопок и подменю)
+    # Просто берем все клики без фильтрации, т.к. все данные теперь в БД
+    kb_clicks = stats['clicks']
 
     if kb_clicks:
         for i, row in enumerate(kb_clicks, 1):
@@ -3112,14 +3111,13 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
                 # Группируем кнопки с учётом индивидуальной ширины
                 inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
 
-                # Добавляем кнопку назад (всегда, независимо от того что было в buttons_json)
+                # Добавляем кнопку назад только если есть parent_id (не первый уровень)
                 if db_content.get('parent_id'):
                     parent_id = db_content['parent_id']
                     print(f"[BOT_DEBUG_VERBOSE] Adding 'Back' button -> dyn:{parent_id}")
                     inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"dyn:{parent_id}")])
                 else:
-                    print(f"[BOT_DEBUG_VERBOSE] No parent_id, adding 'Back to Start' button")
-                    inline_keyboard_list.append([InlineKeyboardButton(text="🔙 В начало", callback_data="main_menu")])
+                    print(f"[BOT_DEBUG_VERBOSE] No parent_id (first level menu), no back button needed")
 
                 kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard_list)
             except Exception as e:
@@ -4595,13 +4593,13 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                     # Группируем кнопки с учётом индивидуальной ширины
                     inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
 
-                    # Добавляем кнопку назад (всегда, независимо от того что было в buttons_json)
+                    # Добавляем кнопку назад только если есть parent_id (не первый уровень)
                     if db_content.get('parent_id'):
                         parent_id = db_content['parent_id']
                         print(f"[BOT_DEBUG_VERBOSE] Adding 'Back' button to parent: '{parent_id}'")
                         inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"dyn:{parent_id}")])
                     else:
-                        print(f"[BOT_DEBUG_VERBOSE] No parent_id found, back button will go to main menu if applicable")
+                        print(f"[BOT_DEBUG_VERBOSE] No parent_id (first level menu), no back button needed")
 
                     kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard_list)
                 except Exception as e:
