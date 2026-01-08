@@ -15,7 +15,8 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from aiogram.enums import ParseMode
 from database import (init_db, add_user, get_all_users, save_broadcast, log_click, get_stats,
                       update_button_content, get_button_content, get_all_keyboard_buttons,
-                      add_keyboard_button, delete_keyboard_button, rename_keyboard_button)
+                      add_keyboard_button, delete_keyboard_button, rename_keyboard_button,
+                      generate_short_id, get_button_by_short_id)
 
 # Load chat continuation texts
 CHATS_CONTINUATION_FILE = "chats_continuation.json"
@@ -67,6 +68,14 @@ async def send_message(message_obj, text, **kwargs):
     if 'link_preview_options' not in kwargs:
         kwargs['link_preview_options'] = LinkPreviewOptions(is_disabled=True)
     return await message_obj.answer(text, **kwargs)
+
+def make_callback_data(button_id: str) -> str:
+    """
+    Создает callback_data для inline кнопки используя короткий ID
+    Telegram ограничивает callback_data до 64 байт
+    """
+    short_id = generate_short_id(button_id)
+    return f"dyn:{short_id}"
 
 def group_buttons_by_row(buttons, buttons_data=None, default_per_row=1):
     """
@@ -130,13 +139,14 @@ def create_page_navigation_buttons(button_id, current_page, total_pages):
     Создаёт кнопки навигации для многостраничного контента
     """
     buttons = []
+    short_id = generate_short_id(button_id)
 
     # Кнопка "Назад" если не первая страница
     if current_page > 0:
         buttons.append(
             InlineKeyboardButton(
                 text="◀️",
-                callback_data=f"page:{button_id}:{current_page - 1}"
+                callback_data=f"page:{short_id}:{current_page - 1}"
             )
         )
 
@@ -144,7 +154,7 @@ def create_page_navigation_buttons(button_id, current_page, total_pages):
     buttons.append(
         InlineKeyboardButton(
             text=f"📄 {current_page + 1}/{total_pages}",
-            callback_data=f"page_info:{button_id}:{current_page}"
+            callback_data=f"page_info:{short_id}:{current_page}"
         )
     )
 
@@ -153,7 +163,7 @@ def create_page_navigation_buttons(button_id, current_page, total_pages):
         buttons.append(
             InlineKeyboardButton(
                 text="▶️",
-                callback_data=f"page:{button_id}:{current_page + 1}"
+                callback_data=f"page:{short_id}:{current_page + 1}"
             )
         )
 
@@ -623,11 +633,11 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
                     # The button ID for the submenu is the one stored in data or label+text
                     # We use nested_id from creation: parent_id + ":" + b['text']
                     submenu_id = f"{button_id}:{b['text']}"
-                    inline_kb.append([InlineKeyboardButton(text=b['text'], callback_data=f"dyn:{submenu_id}")])
+                    inline_kb.append([InlineKeyboardButton(text=b['text'], callback_data=make_callback_data(submenu_id))])
 
             # Add Back button if it's a submenu
             if item.get('parent_id'):
-                inline_kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"dyn:{item['parent_id']}")])
+                inline_kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=make_callback_data(item['parent_id']))])
 
             reply_markup = InlineKeyboardMarkup(inline_keyboard=inline_kb)
         except Exception as e:
@@ -3032,23 +3042,30 @@ async def add_inline_text(message: types.Message, state: FSMContext):
 async def handle_page_navigation(query: types.CallbackQuery):
     """Обработчик навигации по страницам"""
     try:
-        # Парсим callback_data: "page:button_id:page_num"
+        # Парсим callback_data: "page:short_id:page_num"
         parts = query.data.split(":", 2)
         if len(parts) != 3:
             await query.answer("Ошибка навигации")
             return
 
-        button_id = parts[1]
+        short_id = parts[1]
         page_num = int(parts[2])
 
-        print(f"[PAGES] Navigating to page {page_num} of '{button_id}'")
+        print(f"[PAGES] Navigating to page {page_num}, short_id: '{short_id}'")
 
-        # Получаем контент из БД
-        db_content = await get_button_content(button_id)
+        # Получаем контент из БД по короткому ID
+        db_content = await get_button_by_short_id(short_id)
+
+        if not db_content:
+            print(f"[PAGES] Button not found by short_id, trying as full button_id...")
+            db_content = await get_button_content(short_id)
 
         if not db_content or not db_content.get('pages_json'):
             await query.answer("❌ Страницы не найдены")
             return
+
+        button_id = db_content['button_id']
+        print(f"[PAGES] Found button: '{button_id}'")
 
         # Парсим страницы
         pages = json.loads(db_content['pages_json'])
@@ -3080,7 +3097,7 @@ async def handle_page_navigation(query: types.CallbackQuery):
                         button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
                     else:
                         target_id = b.get('id') or f"{button_id}:{btn_text}"
-                        button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}"))
+                        button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=make_callback_data(target_id)))
 
                 # Группируем кнопки по рядам
                 default_per_row = db_content.get('buttons_per_row', 1)
@@ -3095,7 +3112,7 @@ async def handle_page_navigation(query: types.CallbackQuery):
         # Кнопка "Назад" к родителю (если есть)
         if db_content.get('parent_id'):
             parent_id = db_content['parent_id']
-            inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"dyn:{parent_id}")])
+            inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=make_callback_data(parent_id))])
 
         kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard_list)
 
@@ -3123,20 +3140,29 @@ async def handle_page_navigation(query: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("dyn:"))
 async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
-    button_id = query.data[4:]
+    short_id = query.data[4:]  # Извлекаем short_id (12-символьный хеш)
     print(f"\n[BOT_DEBUG_VERBOSE] === process_dynamic_inline Start ===")
     print(f"[BOT_DEBUG_VERBOSE] Callback Data: '{query.data}'")
-    print(f"[BOT_DEBUG_VERBOSE] Raw Target ID from data: '{button_id}'")
+    print(f"[BOT_DEBUG_VERBOSE] Short ID from data: '{short_id}'")
 
-    db_content = await get_button_content(button_id)
+    # Ищем кнопку по короткому ID
+    db_content = await get_button_by_short_id(short_id)
+    button_id = db_content['button_id'] if db_content else None
+
+    if not db_content:
+        # Попробуем найти по полному ID (для обратной совместимости)
+        print(f"[BOT_DEBUG_VERBOSE] Not found by short_id, trying as full button_id...")
+        db_content = await get_button_content(short_id)
+        button_id = short_id if db_content else None
+
     if not db_content:
         # Попробуем найти по тексту кнопки, если ID не совпал напрямую
-        print(f"[BOT_DEBUG_VERBOSE] DB Content NOT found for ID '{button_id}', attempting fallback fuzzy search...")
+        print(f"[BOT_DEBUG_VERBOSE] DB Content NOT found, attempting fallback fuzzy search...")
         all_btns = await get_all_keyboard_buttons()
         print(f"[BOT_DEBUG_VERBOSE] Searching through {len(all_btns)} labels...")
         for b in all_btns:
             b_lbl = b.get('label') if isinstance(b, dict) else (getattr(b, 'label', None) or b['label'] if hasattr(b, '__getitem__') else None)
-            if b_lbl and b_lbl.strip().lower() == button_id.strip().lower():
+            if b_lbl and b_lbl.strip().lower() == short_id.strip().lower():
                 print(f"[BOT_DEBUG_VERBOSE] ✅ Fallback Match Found: '{b_lbl}'")
                 db_content = await get_button_content(b_lbl)
                 if db_content:
@@ -3236,7 +3262,7 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
                         # Если ID не задан в JSON, формируем его
                         target_id = b.get('id') or f"{button_id}:{btn_text}"
                         print(f"[BOT_DEBUG_VERBOSE] -> Submenu ID: {target_id}")
-                        button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}"))
+                        button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=make_callback_data(target_id)))
 
                 # Группируем кнопки с учётом индивидуальной ширины
                 inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
@@ -3257,7 +3283,7 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
                 if db_content.get('parent_id'):
                     parent_id = db_content['parent_id']
                     print(f"[BOT_DEBUG_VERBOSE] Adding 'Back' button -> dyn:{parent_id}")
-                    inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"dyn:{parent_id}")])
+                    inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=make_callback_data(parent_id))])
                 else:
                     print(f"[BOT_DEBUG_VERBOSE] No parent_id (first level menu), no back button needed")
 
@@ -4730,7 +4756,7 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                         else:
                             target_id = b.get('id') or f"{btn_id}:{btn_text}"
                             print(f"[BOT_DEBUG_VERBOSE] -> Submenu ID: {target_id}")
-                            button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}"))
+                            button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=make_callback_data(target_id)))
 
                     # Группируем кнопки с учётом индивидуальной ширины
                     inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
@@ -4751,7 +4777,7 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                     if db_content.get('parent_id'):
                         parent_id = db_content['parent_id']
                         print(f"[BOT_DEBUG_VERBOSE] Adding 'Back' button to parent: '{parent_id}'")
-                        inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"dyn:{parent_id}")])
+                        inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=make_callback_data(parent_id))])
                     else:
                         print(f"[BOT_DEBUG_VERBOSE] No parent_id (first level menu), no back button needed")
 
@@ -4827,7 +4853,7 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                             inline_keyboard_list.append([InlineKeyboardButton(text=btn_text, url=b['url'])])
                         else:
                             target_id = b.get('id') or f"{key}:{btn_text}"
-                            inline_keyboard_list.append([InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}")])
+                            inline_keyboard_list.append([InlineKeyboardButton(text=btn_text, callback_data=make_callback_data(target_id))])
                 except Exception as e:
                     print(f"[BOT_DEBUG] Error parsing DB buttons for static menu: {e}")
 
@@ -4868,7 +4894,7 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                                  inline_kb.append([InlineKeyboardButton(text=b['text'], url=b['url'])])
                              else:
                                  b_id = b.get('id') or f"{label}:{b['text']}"
-                                 inline_kb.append([InlineKeyboardButton(text=b['text'], callback_data=f"dyn:{b_id}")])
+                                 inline_kb.append([InlineKeyboardButton(text=b['text'], callback_data=make_callback_data(b_id))])
                          kb = InlineKeyboardMarkup(inline_keyboard=inline_kb)
                      except: pass
 

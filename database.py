@@ -1,6 +1,7 @@
 import asyncpg
 import os
 import json
+import hashlib
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -99,6 +100,14 @@ async def init_db():
             except:
                 pass
 
+            # Migration: add short_id for callback_data (Telegram 64-byte limit)
+            try:
+                await conn.execute('ALTER TABLE button_content ADD COLUMN IF NOT EXISTS short_id VARCHAR(16)')
+                # Create index for fast lookup by short_id
+                await conn.execute('CREATE INDEX IF NOT EXISTS idx_short_id ON button_content(short_id)')
+            except:
+                pass
+
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS keyboard_buttons (
                     id SERIAL PRIMARY KEY,
@@ -129,6 +138,33 @@ async def close_pool():
     global pool
     if pool:
         await pool.close()
+
+def generate_short_id(button_id: str) -> str:
+    """
+    Генерирует короткий ID для callback_data (макс 64 байта в Telegram)
+    Использует первые 12 символов MD5 хеша от button_id
+    Формат: 12 символов hex (48 бит, ~281 триллионов комбинаций)
+    """
+    hash_obj = hashlib.md5(button_id.encode('utf-8'))
+    short_id = hash_obj.hexdigest()[:12]  # Первые 12 символов
+    return short_id
+
+async def get_button_by_short_id(short_id: str):
+    """Get button content by short_id"""
+    if pool is None:
+        return None
+    try:
+        async with pool.acquire() as conn:
+            result = await conn.fetchrow(
+                'SELECT * FROM button_content WHERE short_id = $1',
+                short_id
+            )
+            if result:
+                return dict(result)
+            return None
+    except Exception as e:
+        print(f"Error getting button by short_id: {e}")
+        return None
 
 async def add_user(user_id, username, first_name, last_name):
     """Add or update a user"""
@@ -213,9 +249,13 @@ async def update_button_content(button_id, content, photo_file_id=None, buttons_
         print("Database pool not initialized. Skipping update_button_content.")
         return False
     try:
+        # Генерируем короткий ID для callback_data
+        short_id = generate_short_id(button_id)
+
         # Используем print для гарантированного вывода в консоль на ПК
         print(f"\n[DB_DEBUG] === Saving Button Content ===")
         print(f"[DB_DEBUG] Button ID: '{button_id}'")
+        print(f"[DB_DEBUG] Short ID: '{short_id}'")
         print(f"[DB_DEBUG] Content: '{content[:50]}...'")
         print(f"[DB_DEBUG] Photo: {photo_file_id}")
         print(f"[DB_DEBUG] Parent: {parent_id}")
@@ -225,8 +265,8 @@ async def update_button_content(button_id, content, photo_file_id=None, buttons_
 
         async with pool.acquire() as conn:
             await conn.execute('''
-                INSERT INTO button_content (button_id, content, photo_file_id, buttons_json, parse_mode, parent_id, buttons_per_row, pages_json)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                INSERT INTO button_content (button_id, content, photo_file_id, buttons_json, parse_mode, parent_id, buttons_per_row, pages_json, short_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 ON CONFLICT (button_id) DO UPDATE SET
                     content = EXCLUDED.content,
                     photo_file_id = EXCLUDED.photo_file_id,
@@ -234,8 +274,9 @@ async def update_button_content(button_id, content, photo_file_id=None, buttons_
                     parse_mode = EXCLUDED.parse_mode,
                     parent_id = EXCLUDED.parent_id,
                     buttons_per_row = EXCLUDED.buttons_per_row,
-                    pages_json = EXCLUDED.pages_json
-            ''', button_id, content, photo_file_id, buttons_json, parse_mode, parent_id, buttons_per_row, pages_json)
+                    pages_json = EXCLUDED.pages_json,
+                    short_id = EXCLUDED.short_id
+            ''', button_id, content, photo_file_id, buttons_json, parse_mode, parent_id, buttons_per_row, pages_json, short_id)
             print(f"[DB_DEBUG] ✅ Saved successfully to button_content")
             return True
     except Exception as e:
