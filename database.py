@@ -85,6 +85,12 @@ async def init_db():
             except:
                 pass
 
+            # Migration: add buttons_per_row if it doesn't exist
+            try:
+                await conn.execute('ALTER TABLE button_content ADD COLUMN IF NOT EXISTS buttons_per_row INT DEFAULT 1')
+            except:
+                pass
+
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS keyboard_buttons (
                     id SERIAL PRIMARY KEY,
@@ -193,7 +199,7 @@ async def save_broadcast(admin_id, text_content, photo_file_id, buttons_json, pa
         print(f"Error saving broadcast: {e}")
         return None
 
-async def update_button_content(button_id, content, photo_file_id=None, buttons_json=None, parse_mode='HTML', parent_id=None):
+async def update_button_content(button_id, content, photo_file_id=None, buttons_json=None, parse_mode='HTML', parent_id=None, buttons_per_row=None):
     """Update or insert button content"""
     if pool is None:
         print("Database pool not initialized. Skipping update_button_content.")
@@ -206,18 +212,32 @@ async def update_button_content(button_id, content, photo_file_id=None, buttons_
         print(f"[DB_DEBUG] Photo: {photo_file_id}")
         print(f"[DB_DEBUG] Parent: {parent_id}")
         print(f"[DB_DEBUG] Buttons JSON: {buttons_json}")
-        
+        print(f"[DB_DEBUG] Buttons per row: {buttons_per_row}")
+
         async with pool.acquire() as conn:
-            await conn.execute('''
-                INSERT INTO button_content (button_id, content, photo_file_id, buttons_json, parse_mode, parent_id)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (button_id) DO UPDATE SET 
-                    content = EXCLUDED.content,
-                    photo_file_id = EXCLUDED.photo_file_id,
-                    buttons_json = EXCLUDED.buttons_json,
-                    parse_mode = EXCLUDED.parse_mode,
-                    parent_id = EXCLUDED.parent_id
-            ''', button_id, content, photo_file_id, buttons_json, parse_mode, parent_id)
+            if buttons_per_row is not None:
+                await conn.execute('''
+                    INSERT INTO button_content (button_id, content, photo_file_id, buttons_json, parse_mode, parent_id, buttons_per_row)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (button_id) DO UPDATE SET
+                        content = EXCLUDED.content,
+                        photo_file_id = EXCLUDED.photo_file_id,
+                        buttons_json = EXCLUDED.buttons_json,
+                        parse_mode = EXCLUDED.parse_mode,
+                        parent_id = EXCLUDED.parent_id,
+                        buttons_per_row = EXCLUDED.buttons_per_row
+                ''', button_id, content, photo_file_id, buttons_json, parse_mode, parent_id, buttons_per_row)
+            else:
+                await conn.execute('''
+                    INSERT INTO button_content (button_id, content, photo_file_id, buttons_json, parse_mode, parent_id)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (button_id) DO UPDATE SET
+                        content = EXCLUDED.content,
+                        photo_file_id = EXCLUDED.photo_file_id,
+                        buttons_json = EXCLUDED.buttons_json,
+                        parse_mode = EXCLUDED.parse_mode,
+                        parent_id = EXCLUDED.parent_id
+                ''', button_id, content, photo_file_id, buttons_json, parse_mode, parent_id)
             print(f"[DB_DEBUG] ✅ Saved successfully to button_content")
             return True
     except Exception as e:

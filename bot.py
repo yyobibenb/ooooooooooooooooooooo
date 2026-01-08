@@ -68,6 +68,25 @@ async def send_message(message_obj, text, **kwargs):
         kwargs['link_preview_options'] = LinkPreviewOptions(is_disabled=True)
     return await message_obj.answer(text, **kwargs)
 
+def group_buttons_by_row(buttons, buttons_per_row=1):
+    """Группирует кнопки по N штук в ряду"""
+    if buttons_per_row <= 0:
+        buttons_per_row = 1
+
+    grouped = []
+    row = []
+    for btn in buttons:
+        row.append(btn)
+        if len(row) >= buttons_per_row:
+            grouped.append(row)
+            row = []
+
+    # Добавляем остаток
+    if row:
+        grouped.append(row)
+
+    return grouped
+
 class AdminMenuStates(StatesGroup):
     main = State()
     managing_menu = State()
@@ -105,6 +124,7 @@ class ContentEditorStates(StatesGroup):
     managing_inline_buttons = State()  # Управление инлайн-кнопками (удаление, редактирование)
     editing_inline_button_name = State()  # Редактирование названия инлайн-кнопки
     editing_keyboard_button_name = State()  # Редактирование названия кнопки клавиатуры
+    setting_buttons_layout = State()  # Настройка расположения инлайн-кнопок
 
 class ChatsContinuationStates(StatesGroup):
     selecting_chat_section = State()
@@ -1408,6 +1428,11 @@ async def content_editor_select(message: types.Message, state: FSMContext):
             kb.append([KeyboardButton(text=f"🔘 {btn_type_icon} {btn['text']}")])
 
     kb.append([KeyboardButton(text="➕ Добавить инлайн-кнопку")])
+
+    # Добавляем кнопку настройки расположения если есть инлайн кнопки
+    if all_buttons:
+        kb.append([KeyboardButton(text="⚙️ Расположение кнопок")])
+
     kb.append([KeyboardButton(text="⬅️ Назад")])
 
     text_preview = current_text[:300] + "..." if len(current_text) > 300 else current_text
@@ -1634,6 +1659,85 @@ async def content_editor_rename_keyboard_button_save(message: types.Message, sta
         return await content_editor_select(fake_msg, state)
     else:
         await message.answer("❌ Ошибка при переименовании кнопки")
+
+@router.message(ContentEditorStates.selecting_menu, F.text == "⚙️ Расположение кнопок")
+async def content_editor_set_buttons_layout(message: types.Message, state: FSMContext):
+    """Настройка расположения инлайн-кнопок"""
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+
+    # Получаем текущее значение из БД
+    db_content = await get_button_content(button_label)
+    current_layout = 1
+    if db_content and db_content.get('buttons_per_row'):
+        current_layout = db_content['buttons_per_row']
+
+    kb = [
+        [KeyboardButton(text="1️⃣ По 1 в ряду")],
+        [KeyboardButton(text="2️⃣ По 2 в ряду")],
+        [KeyboardButton(text="3️⃣ По 3 в ряду")],
+        [KeyboardButton(text="4️⃣ По 4 в ряду")],
+        [KeyboardButton(text="⬅️ Отмена")]
+    ]
+
+    await state.set_state(ContentEditorStates.setting_buttons_layout)
+    await message.answer(
+        f"⚙️ <b>Настройка расположения инлайн-кнопок</b>\n\n"
+        f"Текущее: <b>{current_layout} кнопок в ряду</b>\n\n"
+        f"Выберите сколько кнопок показывать в одном ряду:",
+        reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(ContentEditorStates.setting_buttons_layout)
+async def content_editor_save_buttons_layout(message: types.Message, state: FSMContext):
+    """Сохранение настройки расположения"""
+    if message.text == "⬅️ Отмена":
+        await state.set_state(ContentEditorStates.selecting_menu)
+        return await content_editor_start(message, state)
+
+    # Определяем количество кнопок в ряду
+    layout_map = {
+        "1️⃣ По 1 в ряду": 1,
+        "2️⃣ По 2 в ряду": 2,
+        "3️⃣ По 3 в ряду": 3,
+        "4️⃣ По 4 в ряду": 4
+    }
+
+    buttons_per_row = layout_map.get(message.text)
+    if not buttons_per_row:
+        await message.answer("❌ Неверный выбор")
+        return
+
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+
+    # Получаем текущий контент
+    db_content = await get_button_content(button_label)
+
+    if db_content:
+        # Обновляем с новым параметром расположения
+        success = await update_button_content(
+            button_label,
+            db_content.get('content'),
+            db_content.get('photo_file_id'),
+            db_content.get('buttons_json'),
+            db_content.get('parse_mode', 'HTML'),
+            db_content.get('parent_id'),
+            buttons_per_row
+        )
+
+        if success:
+            await message.answer(f"✅ Расположение обновлено: {buttons_per_row} кнопок в ряду")
+        else:
+            await message.answer("❌ Ошибка при сохранении")
+    else:
+        await message.answer("❌ Контент не найден")
+
+    # Возвращаемся в редактор
+    await state.set_state(ContentEditorStates.selecting_menu)
+    fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
+    return await content_editor_select(fake_msg, state)
 
 @router.message(ContentEditorStates.selecting_menu, F.text == "➕ Добавить инлайн-кнопку")
 async def content_editor_add_inline_button_start(message: types.Message, state: FSMContext):
@@ -2973,17 +3077,26 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
             try:
                 btns = json.loads(db_content['buttons_json'])
                 print(f"[BOT_DEBUG_VERBOSE] Parsed {len(btns)} buttons from JSON")
-                inline_keyboard_list = []
+
+                # Получаем настройку расположения
+                buttons_per_row = db_content.get('buttons_per_row', 1)
+                print(f"[BOT_DEBUG_VERBOSE] Buttons per row: {buttons_per_row}")
+
+                # Создаём список кнопок
+                button_objects = []
                 for i, b in enumerate(btns):
                     btn_text = b.get('text', '???')
                     if b.get('url') and b.get('url') != 'меню':
                         print(f"[BOT_DEBUG_VERBOSE] Inline Button {i+1}: '{btn_text}' -> URL: {b['url']}")
-                        inline_keyboard_list.append([InlineKeyboardButton(text=btn_text, url=b['url'])])
+                        button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
                     else:
                         # Если ID не задан в JSON, формируем его
                         target_id = b.get('id') or f"{button_id}:{btn_text}"
                         print(f"[BOT_DEBUG_VERBOSE] Inline Button {i+1}: '{btn_text}' -> Submenu ID: {target_id}")
-                        inline_keyboard_list.append([InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}")])
+                        button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}"))
+
+                # Группируем кнопки по N в ряду
+                inline_keyboard_list = group_buttons_by_row(button_objects, buttons_per_row)
 
                 # Кнопка назад
                 if db_content.get('parent_id'):
@@ -4437,16 +4550,25 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                 try:
                     btns = json.loads(db_content['buttons_json'])
                     print(f"[BOT_DEBUG_VERBOSE] Parsed {len(btns)} inline buttons")
-                    inline_keyboard_list = []
+
+                    # Получаем настройку расположения
+                    buttons_per_row = db_content.get('buttons_per_row', 1)
+                    print(f"[BOT_DEBUG_VERBOSE] Buttons per row: {buttons_per_row}")
+
+                    # Создаём список кнопок
+                    button_objects = []
                     for i, b in enumerate(btns):
                         btn_text = b.get('text', '???')
                         if b.get('url') and b.get('url') != 'меню':
                             print(f"[BOT_DEBUG_VERBOSE] Inline Button {i+1}: '{btn_text}' -> URL: {b['url']}")
-                            inline_keyboard_list.append([InlineKeyboardButton(text=btn_text, url=b['url'])])
+                            button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
                         else:
                             target_id = b.get('id') or f"{btn_id}:{btn_text}"
                             print(f"[BOT_DEBUG_VERBOSE] Inline Button {i+1}: '{btn_text}' -> Submenu ID: {target_id}")
-                            inline_keyboard_list.append([InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}")])
+                            button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}"))
+
+                    # Группируем кнопки по N в ряду
+                    inline_keyboard_list = group_buttons_by_row(button_objects, buttons_per_row)
 
                     if db_content.get('parent_id'):
                         parent_id = db_content['parent_id']
