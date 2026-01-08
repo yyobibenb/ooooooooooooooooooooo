@@ -1378,6 +1378,7 @@ async def content_editor_select(message: types.Message, state: FSMContext):
     # Собираем инлайн-кнопки из ОБОИХ источников
     all_buttons = []
     idx = 1
+    seen_button_texts = set()  # Для отслеживания дубликатов
 
     # 1. Добавляем статические инлайн-кнопки (если есть)
     if static_menu_info:
@@ -1387,56 +1388,71 @@ async def content_editor_select(message: types.Message, state: FSMContext):
         # Кнопки из submenu
         if static_menu_data.get('type') == 'inline' and static_menu_data.get('submenu'):
             for submenu_id, submenu_data in static_menu_data['submenu'].items():
-                all_buttons.append({
-                    'index': idx,
-                    'text': submenu_data.get('label', submenu_id),
-                    'type': '📄 меню',
-                    'source': 'static',
-                    'id': submenu_id,
-                    'menu_path': f"{static_path}:{submenu_id}"
-                })
-                idx += 1
-
-        # Кнопки из buttons массива
-        if 'buttons' in static_menu_data:
-            for btn in static_menu_data['buttons']:
-                btn_text = btn.get('text', 'Кнопка')
-                if btn.get('callback'):
+                btn_text = submenu_data.get('label', submenu_id)
+                if btn_text not in seen_button_texts:
                     all_buttons.append({
                         'index': idx,
                         'text': btn_text,
                         'type': '📄 меню',
                         'source': 'static',
-                        'callback': btn['callback']
+                        'id': submenu_id,
+                        'menu_path': f"{static_path}:{submenu_id}"
                     })
-                elif btn.get('url'):
-                    all_buttons.append({
-                        'index': idx,
-                        'text': btn_text,
-                        'type': '🔗 URL',
-                        'source': 'static',
-                        'url': btn['url']
-                    })
-                idx += 1
+                    seen_button_texts.add(btn_text)
+                    idx += 1
 
-    # 2. Добавляем динамические инлайн-кнопки из БД
+        # Кнопки из buttons массива
+        if 'buttons' in static_menu_data:
+            for btn in static_menu_data['buttons']:
+                btn_text = btn.get('text', 'Кнопка')
+                if btn_text not in seen_button_texts:
+                    if btn.get('callback'):
+                        all_buttons.append({
+                            'index': idx,
+                            'text': btn_text,
+                            'type': '📄 меню',
+                            'source': 'static',
+                            'callback': btn['callback']
+                        })
+                    elif btn.get('url'):
+                        all_buttons.append({
+                            'index': idx,
+                            'text': btn_text,
+                            'type': '🔗 URL',
+                            'source': 'static',
+                            'url': btn['url']
+                        })
+                    seen_button_texts.add(btn_text)
+                    idx += 1
+
+    # 2. Добавляем динамические инлайн-кнопки из БД (только те, которых нет в статике)
     if db_content and db_content.get('buttons_json'):
         try:
             buttons = json.loads(db_content['buttons_json'])
+
+            # Собираем список текстов статических кнопок для проверки дубликатов
+            static_button_texts = {btn['text'] for btn in all_buttons if btn['source'] == 'static'}
+
             for btn in buttons:
+                btn_text = btn['text']
+
+                # Пропускаем кнопку, если она уже есть в статических
+                if btn_text in static_button_texts:
+                    continue
+
                 if btn.get('url'):
                     all_buttons.append({
                         'index': idx,
-                        'text': btn['text'],
+                        'text': btn_text,
                         'type': '🔗 URL',
                         'source': 'db',
                         'url': btn['url']
                     })
                 else:
-                    submenu_id = btn.get('id', f"{button_label}:{btn['text']}")
+                    submenu_id = btn.get('id', f"{button_label}:{btn_text}")
                     all_buttons.append({
                         'index': idx,
-                        'text': btn['text'],
+                        'text': btn_text,
                         'type': '📄 меню',
                         'source': 'db',
                         'goto': f"db:{submenu_id}",
@@ -2281,19 +2297,23 @@ async def content_editor_button_width_received(message: types.Message, state: FS
         # Создаем новую кнопку с row_width
         if button_type == 'url':
             button_url = data.get('button_url')
-            buttons.append({
+            new_button = {
                 'text': button_text,
                 'url': button_url,
                 'row_width': row_width
-            })
+            }
+            buttons.append(new_button)
+            print(f"[DEBUG] Добавляем URL кнопку: {new_button}")
         else:  # menu
             submenu_id = data.get('submenu_id')
             submenu_content = data.get('submenu_content')
-            buttons.append({
+            new_button = {
                 'text': button_text,
                 'id': submenu_id,
                 'row_width': row_width
-            })
+            }
+            buttons.append(new_button)
+            print(f"[DEBUG] Добавляем меню кнопку: {new_button}")
 
             # Создаем контент для подменю
             await update_button_content(
@@ -2306,11 +2326,14 @@ async def content_editor_button_width_received(message: types.Message, state: FS
             )
 
         # Сохраняем обновленные кнопки родительского меню
+        buttons_json = json.dumps(buttons)
+        print(f"[DEBUG] Сохраняем buttons_json: {buttons_json}")
+
         success = await update_button_content(
             button_label,
             db_content.get('content'),
             db_content.get('photo_file_id'),
-            json.dumps(buttons),
+            buttons_json,
             db_content.get('parse_mode', 'HTML'),
             db_content.get('parent_id')
         )
