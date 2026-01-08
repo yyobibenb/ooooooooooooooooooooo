@@ -19,10 +19,13 @@ async def migrate_submenu(menu_id, menu_data, parent_id=None, full_path=""):
         parent_id: ID родительского меню (для кнопки "Назад")
         full_path: Полный путь в иерархии (для уникальности ID)
     """
-    # Определяем текст контента
+    # Определяем текст контента и pages
+    pages_json = None
     if 'pages' in menu_data and menu_data['pages']:
-        # Многостраничное меню - берём первую страницу
+        # Многостраничное меню - берём первую страницу для content, все для pages_json
         text_content = menu_data['pages'][0].get('text', '')
+        # Сохраняем все страницы в JSON
+        pages_json = json.dumps([{'text': page.get('text', '')} for page in menu_data['pages']])
     else:
         text_content = menu_data.get('text', '')
 
@@ -75,7 +78,9 @@ async def migrate_submenu(menu_id, menu_data, parent_id=None, full_path=""):
         None,  # photo_file_id
         buttons_json,
         'HTML',
-        parent_id
+        parent_id,
+        None,  # buttons_per_row
+        pages_json  # pages_json
     )
 
     if success:

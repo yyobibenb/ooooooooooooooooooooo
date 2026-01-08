@@ -122,6 +122,40 @@ def group_buttons_by_row(buttons, buttons_data=None, default_per_row=1):
 
     return grouped
 
+def create_page_navigation_buttons(button_id, current_page, total_pages):
+    """
+    Создаёт кнопки навигации для многостраничного контента
+    """
+    buttons = []
+
+    # Кнопка "Назад" если не первая страница
+    if current_page > 0:
+        buttons.append(
+            InlineKeyboardButton(
+                text="◀️",
+                callback_data=f"page:{button_id}:{current_page - 1}"
+            )
+        )
+
+    # Индикатор страницы
+    buttons.append(
+        InlineKeyboardButton(
+            text=f"📄 {current_page + 1}/{total_pages}",
+            callback_data=f"page_info:{button_id}:{current_page}"
+        )
+    )
+
+    # Кнопка "Вперёд" если не последняя страница
+    if current_page < total_pages - 1:
+        buttons.append(
+            InlineKeyboardButton(
+                text="▶️",
+                callback_data=f"page:{button_id}:{current_page + 1}"
+            )
+        )
+
+    return buttons
+
 class AdminMenuStates(StatesGroup):
     main = State()
     managing_menu = State()
@@ -2991,6 +3025,99 @@ async def add_inline_text(message: types.Message, state: FSMContext):
     await state.set_state(AdminMenuStates.adding_inline_button_url)
     await message.answer("Введите ссылку для инлайн-кнопки:")
 
+@router.callback_query(F.data.startswith("page:"))
+async def handle_page_navigation(query: types.CallbackQuery):
+    """Обработчик навигации по страницам"""
+    try:
+        # Парсим callback_data: "page:button_id:page_num"
+        parts = query.data.split(":", 2)
+        if len(parts) != 3:
+            await query.answer("Ошибка навигации")
+            return
+
+        button_id = parts[1]
+        page_num = int(parts[2])
+
+        print(f"[PAGES] Navigating to page {page_num} of '{button_id}'")
+
+        # Получаем контент из БД
+        db_content = await get_button_content(button_id)
+
+        if not db_content or not db_content.get('pages_json'):
+            await query.answer("❌ Страницы не найдены")
+            return
+
+        # Парсим страницы
+        pages = json.loads(db_content['pages_json'])
+
+        if page_num < 0 or page_num >= len(pages):
+            await query.answer("❌ Неверный номер страницы")
+            return
+
+        # Текст нужной страницы
+        page_text = pages[page_num].get('text', 'Нет текста')
+
+        # Создаём клавиатуру с кнопками навигации
+        inline_keyboard_list = []
+
+        # Инлайн-кнопки из buttons_json (если есть)
+        if db_content.get('buttons_json'):
+            try:
+                btns = json.loads(db_content['buttons_json'])
+                button_objects = []
+
+                for b in btns:
+                    btn_text = b.get('text', '???')
+
+                    # Пропускаем старые кнопки назад
+                    if b.get('url') == 'меню' or btn_text in ['🔙 Назад', '🔙 В начало']:
+                        continue
+
+                    if b.get('url'):
+                        button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
+                    else:
+                        target_id = b.get('id') or f"{button_id}:{btn_text}"
+                        button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=f"dyn:{target_id}"))
+
+                # Группируем кнопки по рядам
+                default_per_row = db_content.get('buttons_per_row', 1)
+                inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_per_row)
+            except Exception as e:
+                print(f"[PAGES] Error parsing buttons_json: {e}")
+
+        # Добавляем кнопки навигации по страницам
+        nav_buttons = create_page_navigation_buttons(button_id, page_num, len(pages))
+        inline_keyboard_list.append(nav_buttons)
+
+        # Кнопка "Назад" к родителю (если есть)
+        if db_content.get('parent_id'):
+            parent_id = db_content['parent_id']
+            inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"dyn:{parent_id}")])
+
+        kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard_list)
+
+        # Обновляем сообщение
+        photo = db_content.get('photo_file_id')
+
+        if photo:
+            await query.message.edit_media(
+                media=types.InputMediaPhoto(media=photo, caption=page_text, parse_mode=ParseMode.HTML),
+                reply_markup=kb
+            )
+        else:
+            await query.message.edit_text(
+                page_text,
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML,
+                link_preview_options=LinkPreviewOptions(is_disabled=True)
+            )
+
+        await query.answer(f"📄 Страница {page_num + 1}/{len(pages)}")
+
+    except Exception as e:
+        print(f"[PAGES] Error: {e}")
+        await query.answer("❌ Ошибка при переключении страницы")
+
 @router.callback_query(F.data.startswith("dyn:"))
 async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
     button_id = query.data[4:]
@@ -3110,6 +3237,18 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
 
                 # Группируем кнопки с учётом индивидуальной ширины
                 inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
+
+                # Если есть pages_json, показываем навигацию по страницам
+                if db_content.get('pages_json'):
+                    try:
+                        pages = json.loads(db_content['pages_json'])
+                        if len(pages) > 1:
+                            # Добавляем кнопки навигации для первой страницы
+                            nav_buttons = create_page_navigation_buttons(button_id, 0, len(pages))
+                            inline_keyboard_list.append(nav_buttons)
+                            print(f"[BOT_DEBUG_VERBOSE] Added page navigation: {len(pages)} pages")
+                    except Exception as e:
+                        print(f"[BOT_DEBUG_VERBOSE] Error adding page navigation: {e}")
 
                 # Добавляем кнопку назад только если есть parent_id (не первый уровень)
                 if db_content.get('parent_id'):
@@ -4592,6 +4731,18 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
 
                     # Группируем кнопки с учётом индивидуальной ширины
                     inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
+
+                    # Если есть pages_json, показываем навигацию по страницам
+                    if db_content.get('pages_json'):
+                        try:
+                            pages = json.loads(db_content['pages_json'])
+                            if len(pages) > 1:
+                                # Добавляем кнопки навигации для первой страницы
+                                nav_buttons = create_page_navigation_buttons(btn_id, 0, len(pages))
+                                inline_keyboard_list.append(nav_buttons)
+                                print(f"[BOT_DEBUG_VERBOSE] Added page navigation: {len(pages)} pages")
+                        except Exception as e:
+                            print(f"[BOT_DEBUG_VERBOSE] Error adding page navigation: {e}")
 
                     # Добавляем кнопку назад только если есть parent_id (не первый уровень)
                     if db_content.get('parent_id'):

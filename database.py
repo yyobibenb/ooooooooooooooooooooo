@@ -76,7 +76,8 @@ async def init_db():
                     photo_file_id VARCHAR(500),
                     buttons_json TEXT,
                     parse_mode VARCHAR(20) DEFAULT 'HTML',
-                    parent_id VARCHAR(255)
+                    parent_id VARCHAR(255),
+                    pages_json TEXT
                 )
             ''')
 
@@ -89,6 +90,12 @@ async def init_db():
             # Migration: add buttons_per_row if it doesn't exist
             try:
                 await conn.execute('ALTER TABLE button_content ADD COLUMN IF NOT EXISTS buttons_per_row INT DEFAULT 1')
+            except:
+                pass
+
+            # Migration: add pages_json if it doesn't exist
+            try:
+                await conn.execute('ALTER TABLE button_content ADD COLUMN IF NOT EXISTS pages_json TEXT')
             except:
                 pass
 
@@ -200,7 +207,7 @@ async def save_broadcast(admin_id, text_content, photo_file_id, buttons_json, pa
         print(f"Error saving broadcast: {e}")
         return None
 
-async def update_button_content(button_id, content, photo_file_id=None, buttons_json=None, parse_mode='HTML', parent_id=None, buttons_per_row=None):
+async def update_button_content(button_id, content, photo_file_id=None, buttons_json=None, parse_mode='HTML', parent_id=None, buttons_per_row=None, pages_json=None):
     """Update or insert button content"""
     if pool is None:
         print("Database pool not initialized. Skipping update_button_content.")
@@ -214,31 +221,21 @@ async def update_button_content(button_id, content, photo_file_id=None, buttons_
         print(f"[DB_DEBUG] Parent: {parent_id}")
         print(f"[DB_DEBUG] Buttons JSON: {buttons_json}")
         print(f"[DB_DEBUG] Buttons per row: {buttons_per_row}")
+        print(f"[DB_DEBUG] Pages: {len(json.loads(pages_json)) if pages_json else 0} pages")
 
         async with pool.acquire() as conn:
-            if buttons_per_row is not None:
-                await conn.execute('''
-                    INSERT INTO button_content (button_id, content, photo_file_id, buttons_json, parse_mode, parent_id, buttons_per_row)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    ON CONFLICT (button_id) DO UPDATE SET
-                        content = EXCLUDED.content,
-                        photo_file_id = EXCLUDED.photo_file_id,
-                        buttons_json = EXCLUDED.buttons_json,
-                        parse_mode = EXCLUDED.parse_mode,
-                        parent_id = EXCLUDED.parent_id,
-                        buttons_per_row = EXCLUDED.buttons_per_row
-                ''', button_id, content, photo_file_id, buttons_json, parse_mode, parent_id, buttons_per_row)
-            else:
-                await conn.execute('''
-                    INSERT INTO button_content (button_id, content, photo_file_id, buttons_json, parse_mode, parent_id)
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    ON CONFLICT (button_id) DO UPDATE SET
-                        content = EXCLUDED.content,
-                        photo_file_id = EXCLUDED.photo_file_id,
-                        buttons_json = EXCLUDED.buttons_json,
-                        parse_mode = EXCLUDED.parse_mode,
-                        parent_id = EXCLUDED.parent_id
-                ''', button_id, content, photo_file_id, buttons_json, parse_mode, parent_id)
+            await conn.execute('''
+                INSERT INTO button_content (button_id, content, photo_file_id, buttons_json, parse_mode, parent_id, buttons_per_row, pages_json)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (button_id) DO UPDATE SET
+                    content = EXCLUDED.content,
+                    photo_file_id = EXCLUDED.photo_file_id,
+                    buttons_json = EXCLUDED.buttons_json,
+                    parse_mode = EXCLUDED.parse_mode,
+                    parent_id = EXCLUDED.parent_id,
+                    buttons_per_row = EXCLUDED.buttons_per_row,
+                    pages_json = EXCLUDED.pages_json
+            ''', button_id, content, photo_file_id, buttons_json, parse_mode, parent_id, buttons_per_row, pages_json)
             print(f"[DB_DEBUG] ✅ Saved successfully to button_content")
             return True
     except Exception as e:
