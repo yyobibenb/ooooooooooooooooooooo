@@ -36,9 +36,9 @@ async def migrate_submenu(menu_id, menu_data, parent_id=None, full_path=""):
     if menu_data.get('type') == 'inline' and menu_data.get('submenu'):
         for submenu_key, submenu_data in menu_data['submenu'].items():
             if isinstance(submenu_data, dict):
-                # Создаём уникальный ID: parent:child
+                # Создаём уникальный ID: ВСЕГДА parent:child для consistency
                 submenu_label = submenu_data.get('label', submenu_key)
-                submenu_full_id = f"{menu_id}:{submenu_label}" if full_path else submenu_label
+                submenu_full_id = f"{menu_id}:{submenu_label}"
 
                 # Обычное подменю
                 buttons.append({
@@ -92,9 +92,9 @@ async def migrate_submenu(menu_id, menu_data, parent_id=None, full_path=""):
     if menu_data.get('submenu'):
         for submenu_key, submenu_data in menu_data['submenu'].items():
             if isinstance(submenu_data, dict) and not submenu_data.get('url'):
-                # Создаём полный путь для вложенного меню
+                # Создаём полный путь для вложенного меню: ВСЕГДА parent:child
                 submenu_label = submenu_data.get('label', submenu_key)
-                submenu_full_id = f"{menu_id}:{submenu_label}" if full_path else submenu_label
+                submenu_full_id = f"{menu_id}:{submenu_label}"
                 new_full_path = f"{full_path}/{submenu_key}" if full_path else submenu_key
 
                 await migrate_submenu(
