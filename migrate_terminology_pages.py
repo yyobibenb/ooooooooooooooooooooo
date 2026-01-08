@@ -52,15 +52,34 @@ async def migrate_terminology():
     print(f"   • Total pages: {len(pages)}")
     print(f"   • First page length: {len(first_page_text)} chars")
 
-    # Обновляем запись (оставляем buttons_json и parent_id как есть)
+    # Сначала получаем существующую запись, чтобы не потерять данные
+    from database import get_button_content, pool
+    existing = None
+    try:
+        async with pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                'SELECT buttons_json, parent_id, buttons_per_row FROM button_content WHERE button_id = $1',
+                button_id
+            )
+    except Exception as e:
+        print(f"   ⚠️  Could not fetch existing data: {e}")
+
+    # Используем существующие значения или None
+    existing_buttons_json = existing['buttons_json'] if existing else None
+    existing_parent_id = existing['parent_id'] if existing else None
+    existing_buttons_per_row = existing['buttons_per_row'] if existing else None
+
+    print(f"   • Preserving: buttons_json={bool(existing_buttons_json)}, parent_id={existing_parent_id}")
+
+    # Обновляем только content и pages_json, сохраняя остальное
     success = await update_button_content(
         button_id,
         first_page_text,
         None,  # photo_file_id
-        None,  # buttons_json (не меняем)
+        existing_buttons_json,  # Сохраняем существующие кнопки!
         'HTML',
-        None,  # parent_id (не меняем, должен быть None)
-        None,  # buttons_per_row
+        existing_parent_id,  # Сохраняем parent_id!
+        existing_buttons_per_row,  # Сохраняем buttons_per_row!
         pages_json
     )
 
