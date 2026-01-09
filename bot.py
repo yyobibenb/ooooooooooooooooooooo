@@ -16,7 +16,7 @@ from aiogram.enums import ParseMode
 from database import (init_db, add_user, get_all_users, save_broadcast, log_click, get_stats,
                       update_button_content, get_button_content, get_all_keyboard_buttons,
                       add_keyboard_button, delete_keyboard_button, rename_keyboard_button,
-                      generate_short_id, get_button_by_short_id)
+                      generate_short_id, get_button_by_short_id, move_button_up, move_button_down)
 
 # Load chat continuation texts
 CHATS_CONTINUATION_FILE = "chats_continuation.json"
@@ -479,6 +479,7 @@ class AdminMenuStates(StatesGroup):
     creating_nested = State() # For deep nesting
     button_action_menu = State()  # Меню действий над кнопкой
     renaming_button = State()  # Переименование кнопки
+    reordering_buttons = State()  # Изменение порядка кнопок
 
 @router.message(F.text == "🏗 Управление меню")
 async def manage_menu(message: types.Message, state: FSMContext):
@@ -493,6 +494,7 @@ async def manage_menu(message: types.Message, state: FSMContext):
     for btn in buttons:
         kb.append([KeyboardButton(text=f"⚙️ {btn['label']}")])
     kb.append([KeyboardButton(text="➕ Создать новую кнопку")])
+    kb.append([KeyboardButton(text="🔄 Изменить порядок кнопок")])
     kb.append([KeyboardButton(text="⬅️ Назад")])
     await state.set_state(AdminMenuStates.managing_menu)
     await message.answer(text, reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True), parse_mode=ParseMode.HTML)
@@ -502,6 +504,9 @@ async def process_menu_management(message: types.Message, state: FSMContext):
     if message.text == "➕ Создать новую кнопку":
         await state.set_state(AdminMenuStates.adding_button_label)
         await message.answer("Введите название для кнопки:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Отмена")]], resize_keyboard=True))
+    elif message.text == "🔄 Изменить порядок кнопок":
+        # Показываем интерфейс изменения порядка кнопок
+        await show_reorder_interface(message, state)
     elif message.text.startswith("⚙️ "):
         # Показываем меню управления конкретной кнопкой
         label = message.text[2:]
@@ -570,6 +575,100 @@ async def process_button_rename(message: types.Message, state: FSMContext):
         await message.answer(f"❌ Ошибка при переименовании кнопки")
 
     await manage_menu(message, state)
+
+async def show_reorder_interface(message: types.Message, state: FSMContext):
+    """Показывает интерфейс для изменения порядка кнопок"""
+    buttons = await get_all_keyboard_buttons()
+
+    if not buttons:
+        await message.answer("❌ Нет кнопок для изменения порядка")
+        return await manage_menu(message, state)
+
+    # Формируем текст с пронумерованными кнопками
+    text = "🔄 <b>Изменение порядка кнопок</b>\n\n"
+    text += "Текущий порядок:\n"
+
+    for idx, btn in enumerate(buttons, 1):
+        text += f"{idx}. {btn['label']}\n"
+
+    text += "\nВыберите кнопку для перемещения:"
+
+    # Создаём клавиатуру с кнопками
+    kb = []
+    for btn in buttons:
+        kb.append([KeyboardButton(text=f"🔹 {btn['label']}")])
+    kb.append([KeyboardButton(text="⬅️ Назад")])
+
+    await state.set_state(AdminMenuStates.reordering_buttons)
+    await message.answer(
+        text,
+        reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(AdminMenuStates.reordering_buttons)
+async def process_reordering(message: types.Message, state: FSMContext):
+    """Обработка перемещения кнопок"""
+    if message.text == "⬅️ Назад":
+        return await manage_menu(message, state)
+
+    if message.text == "⬆️ Вверх":
+        # Перемещаем выбранную кнопку вверх
+        data = await state.get_data()
+        selected_label = data.get('reorder_selected_button')
+
+        if not selected_label:
+            await message.answer("❌ Кнопка не выбрана")
+            return
+
+        success = await move_button_up(selected_label)
+        if success:
+            await message.answer(f"✅ Кнопка '{selected_label}' перемещена вверх")
+        else:
+            await message.answer(f"❌ Не удалось переместить кнопку вверх (возможно, она уже первая)")
+
+        # Показываем обновлённый список
+        await show_reorder_interface(message, state)
+
+    elif message.text == "⬇️ Вниз":
+        # Перемещаем выбранную кнопку вниз
+        data = await state.get_data()
+        selected_label = data.get('reorder_selected_button')
+
+        if not selected_label:
+            await message.answer("❌ Кнопка не выбрана")
+            return
+
+        success = await move_button_down(selected_label)
+        if success:
+            await message.answer(f"✅ Кнопка '{selected_label}' перемещена вниз")
+        else:
+            await message.answer(f"❌ Не удалось переместить кнопку вниз (возможно, она уже последняя)")
+
+        # Показываем обновлённый список
+        await show_reorder_interface(message, state)
+
+    elif message.text.startswith("🔹 "):
+        # Выбрана кнопка для перемещения
+        label = message.text[2:]
+        await state.update_data(reorder_selected_button=label)
+
+        # Показываем кнопки управления
+        kb = [
+            [KeyboardButton(text="⬆️ Вверх"), KeyboardButton(text="⬇️ Вниз")],
+            [KeyboardButton(text="✅ Готово")],
+            [KeyboardButton(text="⬅️ Назад")]
+        ]
+
+        await message.answer(
+            f"🔹 Выбрана кнопка: <b>{label}</b>\n\nИспользуйте кнопки для перемещения:",
+            reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+            parse_mode=ParseMode.HTML
+        )
+
+    elif message.text == "✅ Готово":
+        await message.answer("✅ Порядок кнопок изменён!")
+        await manage_menu(message, state)
 
 @router.message(AdminMenuStates.adding_button_label)
 async def add_btn_label(message: types.Message, state: FSMContext):
@@ -3330,24 +3429,7 @@ async def manage_menu(message: types.Message, state: FSMContext):
     await state.set_state(AdminMenuStates.managing_menu)
     await message.answer("🛠 <b>Управление меню</b>\n\nНажмите на кнопку, чтобы <b>удалить</b> её, или используйте '➕ Создать кнопку'.", reply_markup=kb, parse_mode=ParseMode.HTML)
 
-@router.message(AdminMenuStates.managing_menu)
-async def process_menu_management(message: types.Message, state: FSMContext):
-    if message.text == "➕ Создать кнопку":
-        await state.set_state(AdminMenuStates.adding_button_label)
-        await message.answer("Введите название для новой кнопки:", 
-                             reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Отмена")]], resize_keyboard=True))
-    elif message.text == "⬅️ Назад":
-        await state.clear()
-        await admin_button(message, state)
-    else:
-        buttons = await get_all_keyboard_buttons()
-        labels = [b['label'] for b in buttons]
-        if message.text in labels:
-            if await delete_keyboard_button(message.text):
-                await message.answer(f"✅ Кнопка '{message.text}' удалена.")
-            else:
-                await message.answer(f"❌ Ошибка при удалении кнопки.")
-            await manage_menu(message, state)
+# Дубликат удален - используется версия на строке 503
 
 async def add_button_label(message: types.Message, state: FSMContext):
     if message.text == "⬅️ Отмена":

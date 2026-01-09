@@ -417,3 +417,109 @@ async def rename_keyboard_button(old_label, new_label):
     except Exception as e:
         print(f"Error renaming keyboard button: {e}")
         return False
+
+async def swap_button_positions(label1, label2):
+    """Swap positions of two keyboard buttons"""
+    if pool is None:
+        print("Database pool not initialized. Skipping swap_button_positions.")
+        return False
+    try:
+        async with pool.acquire() as conn:
+            # Получаем текущие позиции обеих кнопок
+            btn1 = await conn.fetchrow('SELECT row_index, col_index FROM keyboard_buttons WHERE label = $1', label1)
+            btn2 = await conn.fetchrow('SELECT row_index, col_index FROM keyboard_buttons WHERE label = $1', label2)
+
+            if not btn1 or not btn2:
+                print(f"One or both buttons not found: {label1}, {label2}")
+                return False
+
+            # Меняем местами позиции
+            await conn.execute(
+                'UPDATE keyboard_buttons SET row_index = $1, col_index = $2 WHERE label = $3',
+                btn2['row_index'], btn2['col_index'], label1
+            )
+            await conn.execute(
+                'UPDATE keyboard_buttons SET row_index = $1, col_index = $2 WHERE label = $3',
+                btn1['row_index'], btn1['col_index'], label2
+            )
+
+            print(f"[DB_DEBUG] Swapped positions: '{label1}' <-> '{label2}'")
+            return True
+    except Exception as e:
+        print(f"Error swapping button positions: {e}")
+        return False
+
+async def move_button_up(label):
+    """Move button up in the list"""
+    if pool is None:
+        return False
+    try:
+        async with pool.acquire() as conn:
+            # Получаем текущую кнопку
+            current = await conn.fetchrow('SELECT row_index, col_index FROM keyboard_buttons WHERE label = $1', label)
+            if not current:
+                return False
+
+            row_idx = current['row_index']
+            col_idx = current['col_index']
+
+            # Ищем кнопку выше
+            if col_idx == 1:  # Правая кнопка -> меняемся с левой в том же ряду
+                target = await conn.fetchrow(
+                    'SELECT label FROM keyboard_buttons WHERE row_index = $1 AND col_index = 0',
+                    row_idx
+                )
+            elif col_idx == 0 and row_idx > 0:  # Левая кнопка -> меняемся с правой в предыдущем ряду
+                target = await conn.fetchrow(
+                    'SELECT label FROM keyboard_buttons WHERE row_index = $1 AND col_index = 1',
+                    row_idx - 1
+                )
+                if not target:  # Если нет правой кнопки, берём левую
+                    target = await conn.fetchrow(
+                        'SELECT label FROM keyboard_buttons WHERE row_index = $1 AND col_index = 0',
+                        row_idx - 1
+                    )
+            else:
+                return False
+
+            if target:
+                return await swap_button_positions(label, target['label'])
+            return False
+    except Exception as e:
+        print(f"Error moving button up: {e}")
+        return False
+
+async def move_button_down(label):
+    """Move button down in the list"""
+    if pool is None:
+        return False
+    try:
+        async with pool.acquire() as conn:
+            # Получаем текущую кнопку
+            current = await conn.fetchrow('SELECT row_index, col_index FROM keyboard_buttons WHERE label = $1', label)
+            if not current:
+                return False
+
+            row_idx = current['row_index']
+            col_idx = current['col_index']
+
+            # Ищем кнопку ниже
+            if col_idx == 0:  # Левая кнопка -> меняемся с правой в том же ряду
+                target = await conn.fetchrow(
+                    'SELECT label FROM keyboard_buttons WHERE row_index = $1 AND col_index = 1',
+                    row_idx
+                )
+            elif col_idx == 1:  # Правая кнопка -> меняемся с левой в следующем ряду
+                target = await conn.fetchrow(
+                    'SELECT label FROM keyboard_buttons WHERE row_index = $1 AND col_index = 0',
+                    row_idx + 1
+                )
+            else:
+                return False
+
+            if target:
+                return await swap_button_positions(label, target['label'])
+            return False
+    except Exception as e:
+        print(f"Error moving button down: {e}")
+        return False
