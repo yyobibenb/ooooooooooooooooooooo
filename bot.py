@@ -440,12 +440,33 @@ async def cmd_start(message: types.Message, state: FSMContext):
     start_text = start_text_template.replace("{user_link}", user_link)
 
     keyboard = await get_dynamic_keyboard(user_id)
+
+    # Получаем file_id фото из БД
+    photo_file_id = await get_setting('start_photo_file_id')
+
     try:
-        await message.answer_photo(photo=types.FSInputFile("start_image.jpg"),
-                                   caption=start_text,
-                                   reply_markup=keyboard,
-                                   parse_mode=ParseMode.HTML)
-    except Exception:
+        if photo_file_id:
+            # Используем фото из БД (по file_id)
+            await message.answer_photo(
+                photo=photo_file_id,
+                caption=start_text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            # Fallback: пробуем локальный файл
+            try:
+                await message.answer_photo(
+                    photo=types.FSInputFile("start_image.jpg"),
+                    caption=start_text,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+            except:
+                # Если файла нет, отправляем без фото
+                await message.answer(start_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Error sending start photo: {e}")
         await message.answer(start_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 @router.message(F.text == "🔐 Админ-панель")
@@ -483,6 +504,7 @@ class AdminMenuStates(StatesGroup):
     renaming_button = State()  # Переименование кнопки
     reordering_buttons = State()  # Изменение порядка кнопок
     editing_start_text = State()  # Редактирование текста /start
+    editing_start_photo = State()  # Редактирование фото /start
 
 @router.message(F.text == "📝 Текст /start")
 async def edit_start_text_button(message: types.Message, state: FSMContext):
@@ -503,22 +525,56 @@ async def edit_start_text_button(message: types.Message, state: FSMContext):
         )
 
     await state.set_state(AdminMenuStates.editing_start_text)
-    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Отмена")]], resize_keyboard=True)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🖼 Изменить фото")],
+            [KeyboardButton(text="⬅️ Отмена")]
+        ],
+        resize_keyboard=True
+    )
     await message.answer(
         f"📝 <b>Редактирование текста /start</b>\n\n"
         f"Текущий текст:\n{current_text}\n\n"
         f"Отправьте новый текст (поддерживается HTML).\n"
-        f"Используйте <code>{{user_link}}</code> для упоминания пользователя.",
+        f"Используйте <code>{{user_link}}</code> для упоминания пользователя.\n\n"
+        f"Или нажмите кнопку '🖼 Изменить фото' чтобы загрузить фото.",
         reply_markup=kb,
         parse_mode=ParseMode.HTML
     )
 
 @router.message(AdminMenuStates.editing_start_text)
 async def save_start_text(message: types.Message, state: FSMContext):
-    """Сохранение нового текста /start"""
+    """Сохранение нового текста /start или переход к редактированию фото"""
     if message.text == "⬅️ Отмена":
         await state.clear()
         return await admin_button(message, state)
+
+    if message.text == "🖼 Изменить фото":
+        # Переходим к редактированию фото
+        await state.set_state(AdminMenuStates.editing_start_photo)
+        kb = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="🗑 Удалить фото")],
+                [KeyboardButton(text="⬅️ Отмена")]
+            ],
+            resize_keyboard=True
+        )
+
+        current_photo_id = await get_setting('start_photo_file_id')
+        if current_photo_id:
+            await message.answer_photo(
+                photo=current_photo_id,
+                caption="📸 <b>Текущее фото /start</b>\n\nОтправьте новое фото или нажмите '🗑 Удалить фото'",
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.answer(
+                "📸 <b>Изменение фото /start</b>\n\nОтправьте фото",
+                reply_markup=kb,
+                parse_mode=ParseMode.HTML
+            )
+        return
 
     new_text = message.text
     success = await set_setting('start_text', new_text)
@@ -530,6 +586,35 @@ async def save_start_text(message: types.Message, state: FSMContext):
 
     await state.clear()
     await admin_button(message, state)
+
+@router.message(AdminMenuStates.editing_start_photo)
+async def save_start_photo(message: types.Message, state: FSMContext):
+    """Сохранение фото /start"""
+    if message.text == "⬅️ Отмена":
+        await state.clear()
+        return await admin_button(message, state)
+
+    if message.text == "🗑 Удалить фото":
+        # Удаляем фото
+        await set_setting('start_photo_file_id', '')
+        await message.answer("✅ Фото /start удалено!")
+        await state.clear()
+        return await admin_button(message, state)
+
+    if message.photo:
+        # Сохраняем file_id фото
+        photo_file_id = message.photo[-1].file_id
+        success = await set_setting('start_photo_file_id', photo_file_id)
+
+        if success:
+            await message.answer("✅ Фото /start обновлено!")
+        else:
+            await message.answer("❌ Ошибка при сохранении фото")
+
+        await state.clear()
+        await admin_button(message, state)
+    else:
+        await message.answer("❌ Пожалуйста, отправьте фото")
 
 @router.message(F.text == "🏗 Управление меню")
 async def manage_menu(message: types.Message, state: FSMContext):
