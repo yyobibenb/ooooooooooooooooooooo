@@ -441,29 +441,29 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     keyboard = await get_dynamic_keyboard(user_id)
 
-    # Получаем file_id фото из БД
-    photo_file_id = await get_setting('start_photo_file_id')
-
+    # Сначала пробуем локальный файл start_image.jpg
+    import os
     try:
-        if photo_file_id:
-            # Используем фото из БД (по file_id)
+        if os.path.exists("start_image.jpg"):
+            # Используем локальный файл
             await message.answer_photo(
-                photo=photo_file_id,
+                photo=types.FSInputFile("start_image.jpg"),
                 caption=start_text,
                 reply_markup=keyboard,
                 parse_mode=ParseMode.HTML
             )
         else:
-            # Fallback: пробуем локальный файл
-            try:
+            # Fallback: пробуем file_id из БД
+            photo_file_id = await get_setting('start_photo_file_id')
+            if photo_file_id:
                 await message.answer_photo(
-                    photo=types.FSInputFile("start_image.jpg"),
+                    photo=photo_file_id,
                     caption=start_text,
                     reply_markup=keyboard,
                     parse_mode=ParseMode.HTML
                 )
-            except:
-                # Если файла нет, отправляем без фото
+            else:
+                # Если ничего нет, отправляем без фото
                 await message.answer(start_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"Error sending start photo: {e}")
@@ -595,21 +595,39 @@ async def save_start_photo(message: types.Message, state: FSMContext):
         return await admin_button(message, state)
 
     if message.text == "🗑 Удалить фото":
-        # Удаляем фото
-        await set_setting('start_photo_file_id', '')
-        await message.answer("✅ Фото /start удалено!")
+        # Удаляем фото (и файл, и запись в БД)
+        try:
+            import os
+            if os.path.exists("start_image.jpg"):
+                os.remove("start_image.jpg")
+            await set_setting('start_photo_file_id', '')
+            await message.answer("✅ Фото /start удалено!")
+        except Exception as e:
+            logger.error(f"Error deleting photo: {e}")
+            await message.answer(f"❌ Ошибка при удалении фото: {e}")
         await state.clear()
         return await admin_button(message, state)
 
     if message.photo:
-        # Сохраняем file_id фото
-        photo_file_id = message.photo[-1].file_id
-        success = await set_setting('start_photo_file_id', photo_file_id)
+        # Скачиваем фото и сохраняем как файл
+        photo = message.photo[-1]
+        photo_file_id = photo.file_id
 
-        if success:
-            await message.answer("✅ Фото /start обновлено!")
-        else:
-            await message.answer("❌ Ошибка при сохранении фото")
+        try:
+            # Скачиваем файл от Telegram
+            file = await bot.get_file(photo.file_id)
+            file_path = file.file_path
+
+            # Сохраняем как start_image.jpg
+            await bot.download_file(file_path, "start_image.jpg")
+
+            # Также сохраняем file_id в БД для резерва
+            await set_setting('start_photo_file_id', photo_file_id)
+
+            await message.answer("✅ Фото /start сохранено как файл start_image.jpg!")
+        except Exception as e:
+            logger.error(f"Error downloading photo: {e}")
+            await message.answer(f"❌ Ошибка при сохранении фото: {e}")
 
         await state.clear()
         await admin_button(message, state)
