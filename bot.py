@@ -1042,7 +1042,7 @@ async def handle_all_text_messages(message: types.Message, state: FSMContext):
     if current_state:
         state_str = str(current_state)
         # Если состояние содержит ключевые слова ожидания ввода - выходим, даем сработать другим хендлерам
-        text_expecting_keywords = ["waiting", "adding", "editing", "creating", "confirming", "managing", "main"]
+        text_expecting_keywords = ["waiting", "adding", "editing", "creating", "confirming", "managing", "main", "selecting"]
         if any(k in state_str.lower() for k in text_expecting_keywords):
             print(f"[BOT_DEBUG_VERBOSE] State '{state_str}' is active. Letting FSM handler proceed.")
             return
