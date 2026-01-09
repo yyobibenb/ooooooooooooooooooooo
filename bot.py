@@ -208,6 +208,9 @@ class ContentEditorStates(StatesGroup):
     editing_inline_button_name = State()  # Редактирование названия инлайн-кнопки
     editing_keyboard_button_name = State()  # Редактирование названия кнопки клавиатуры
     setting_buttons_layout = State()  # Настройка расположения инлайн-кнопок
+    managing_pages = State()           # Управление страницами (список страниц)
+    editing_page = State()             # Редактирование текста страницы
+    adding_page = State()              # Добавление новой страницы
 
 class ChatsContinuationStates(StatesGroup):
     selecting_chat_section = State()
@@ -1198,6 +1201,15 @@ async def content_editor_select(message: types.Message, state: FSMContext):
         [KeyboardButton(text="✏️ Переименовать кнопку")],
     ]
 
+    # Добавляем кнопку управления страницами если есть pages_json
+    if db_content and db_content.get('pages_json'):
+        try:
+            pages = json.loads(db_content['pages_json'])
+            if pages:
+                kb.append([KeyboardButton(text=f"📄 Управление страницами ({len(pages)} стр.)")])
+        except:
+            pass
+
     # Добавляем каждую инлайн-кнопку как отдельную кнопку в клавиатуре
     if all_buttons:
         kb.append([KeyboardButton(text="📋 Инлайн-кнопки:")])
@@ -1509,6 +1521,346 @@ async def content_editor_save_buttons_layout(message: types.Message, state: FSMC
         await message.answer("❌ Контент не найден")
 
     # Возвращаемся в редактор
+    await state.set_state(ContentEditorStates.selecting_menu)
+    fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
+    return await content_editor_select(fake_msg, state)
+# ============= ОБРАБОТЧИКИ УПРАВЛЕНИЯ СТРАНИЦАМИ =============
+
+@router.message(ContentEditorStates.selecting_menu, F.text.startswith("📄 Управление страницами"))
+async def content_editor_manage_pages(message: types.Message, state: FSMContext):
+    """Показать список страниц для редактирования"""
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+
+    db_content = await get_button_content(button_label)
+
+    if not db_content or not db_content.get('pages_json'):
+        await message.answer("❌ У этой кнопки нет страниц")
+        return
+
+    try:
+        pages = json.loads(db_content['pages_json'])
+    except:
+        await message.answer("❌ Ошибка при загрузке страниц")
+        return
+
+    # Сохраняем pages в state
+    await state.update_data(pages=pages)
+    await state.set_state(ContentEditorStates.managing_pages)
+
+    # Формируем клавиатуру со списком страниц
+    kb = []
+    for i, page in enumerate(pages):
+        page_preview = page.get('text', '')[:50] + "..." if len(page.get('text', '')) > 50 else page.get('text', '')
+        kb.append([KeyboardButton(text=f"📄 {i+1}. {page_preview}")])
+
+    kb.append([KeyboardButton(text="➕ Добавить новую страницу")])
+    kb.append([KeyboardButton(text="⬅️ Назад")])
+
+    await message.answer(
+        f"📄 <b>Управление страницами: {button_label}</b>\n\n"
+        f"Всего страниц: {len(pages)}\n\n"
+        f"Выберите страницу для редактирования или удаления:",
+        reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(ContentEditorStates.managing_pages, F.text.startswith("📄 "))
+async def content_editor_select_page(message: types.Message, state: FSMContext):
+    """Выбор страницы для редактирования"""
+    try:
+        # Извлекаем номер страницы из текста "📄 1. текст..."
+        page_num = int(message.text.split(".")[0].replace("📄 ", "").strip()) - 1
+
+        data = await state.get_data()
+        pages = data.get('pages', [])
+
+        if page_num < 0 or page_num >= len(pages):
+            await message.answer("❌ Неверный номер страницы")
+            return
+
+        page = pages[page_num]
+        page_text = page.get('text', '')
+
+        # Сохраняем выбранную страницу
+        await state.update_data(selected_page_index=page_num)
+
+        # Показываем меню редактирования страницы
+        kb = [
+            [KeyboardButton(text="✏️ Редактировать текст")],
+            [KeyboardButton(text="🗑 Удалить страницу")],
+            [KeyboardButton(text="⬆️ Переместить вверх")] if page_num > 0 else [],
+            [KeyboardButton(text="⬇️ Переместить вниз")] if page_num < len(pages) - 1 else [],
+            [KeyboardButton(text="⬅️ Назад")]
+        ]
+
+        # Убираем пустые списки
+        kb = [row for row in kb if row]
+
+        text_preview = page_text[:500] + "..." if len(page_text) > 500 else page_text
+
+        await message.answer(
+            f"📄 <b>Страница {page_num + 1} из {len(pages)}</b>\n\n"
+            f"{text_preview}\n\n"
+            f"Выберите действие:",
+            reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+
+@router.message(ContentEditorStates.managing_pages, F.text == "✏️ Редактировать текст")
+async def content_editor_edit_page_text(message: types.Message, state: FSMContext):
+    """Начать редактирование текста страницы"""
+    await state.set_state(ContentEditorStates.editing_page)
+    await message.answer(
+        "✏️ <b>Редактирование текста страницы</b>\n\n"
+        "Введите новый текст. Поддерживается HTML форматирование:\n"
+        "• <code>&lt;b&gt;жирный&lt;/b&gt;</code> → <b>жирный</b>\n"
+        "• <code>&lt;i&gt;курсив&lt;/i&gt;</code> → <i>курсив</i>\n"
+        "• <code>&lt;a href='URL'&gt;текст&lt;/a&gt;</code> → ссылка\n"
+        "• <code>&lt;code&gt;код&lt;/code&gt;</code> → <code>код</code>",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Отмена")]],
+            resize_keyboard=True
+        ),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(ContentEditorStates.editing_page)
+async def content_editor_save_page_text(message: types.Message, state: FSMContext):
+    """Сохранить отредактированный текст страницы"""
+    if message.text == "⬅️ Отмена":
+        await state.set_state(ContentEditorStates.managing_pages)
+        return await content_editor_manage_pages(message, state)
+
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+    pages = data.get('pages', [])
+    page_index = data.get('selected_page_index', 0)
+
+    # Обновляем текст страницы
+    pages[page_index]['text'] = message.text
+
+    # Сохраняем в БД
+    db_content = await get_button_content(button_label)
+
+    if db_content:
+        pages_json = json.dumps(pages)
+
+        success = await update_button_content(
+            button_label,
+            pages[0]['text'],  # Первая страница для content
+            db_content.get('photo_file_id'),
+            db_content.get('buttons_json'),
+            db_content.get('parse_mode', 'HTML'),
+            db_content.get('parent_id'),
+            db_content.get('buttons_per_row'),
+            pages_json
+        )
+
+        if success:
+            await message.answer(f"✅ Страница {page_index + 1} обновлена!")
+            await state.update_data(pages=pages)
+        else:
+            await message.answer("❌ Ошибка при сохранении")
+
+    # Вернуться к списку страниц
+    await state.set_state(ContentEditorStates.managing_pages)
+    fake_msg = message.model_copy(update={"text": f"📄 Управление страницами"})
+    return await content_editor_manage_pages(fake_msg, state)
+
+@router.message(ContentEditorStates.managing_pages, F.text == "🗑 Удалить страницу")
+async def content_editor_delete_page(message: types.Message, state: FSMContext):
+    """Удалить страницу"""
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+    pages = data.get('pages', [])
+    page_index = data.get('selected_page_index', 0)
+
+    if len(pages) <= 1:
+        await message.answer("❌ Нельзя удалить последнюю страницу!")
+        return
+
+    # Удаляем страницу
+    deleted_page = pages.pop(page_index)
+
+    # Сохраняем в БД
+    db_content = await get_button_content(button_label)
+
+    if db_content:
+        pages_json = json.dumps(pages)
+
+        success = await update_button_content(
+            button_label,
+            pages[0]['text'],  # Первая страница для content
+            db_content.get('photo_file_id'),
+            db_content.get('buttons_json'),
+            db_content.get('parse_mode', 'HTML'),
+            db_content.get('parent_id'),
+            db_content.get('buttons_per_row'),
+            pages_json
+        )
+
+        if success:
+            await message.answer(f"✅ Страница {page_index + 1} удалена! Осталось страниц: {len(pages)}")
+            await state.update_data(pages=pages)
+        else:
+            await message.answer("❌ Ошибка при сохранении")
+
+    # Вернуться к списку страниц
+    await state.set_state(ContentEditorStates.managing_pages)
+    fake_msg = message.model_copy(update={"text": f"📄 Управление страницами"})
+    return await content_editor_manage_pages(fake_msg, state)
+
+@router.message(ContentEditorStates.managing_pages, F.text == "➕ Добавить новую страницу")
+async def content_editor_add_page_prompt(message: types.Message, state: FSMContext):
+    """Начать добавление новой страницы"""
+    await state.set_state(ContentEditorStates.adding_page)
+    await message.answer(
+        "➕ <b>Добавление новой страницы</b>\n\n"
+        "Введите текст для новой страницы. Поддерживается HTML форматирование:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="⬅️ Отмена")]],
+            resize_keyboard=True
+        ),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(ContentEditorStates.adding_page)
+async def content_editor_add_page(message: types.Message, state: FSMContext):
+    """Добавить новую страницу"""
+    if message.text == "⬅️ Отмена":
+        await state.set_state(ContentEditorStates.managing_pages)
+        return await content_editor_manage_pages(message, state)
+
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+    pages = data.get('pages', [])
+
+    # Добавляем новую страницу
+    pages.append({'text': message.text})
+
+    # Сохраняем в БД
+    db_content = await get_button_content(button_label)
+
+    if db_content:
+        pages_json = json.dumps(pages)
+
+        success = await update_button_content(
+            button_label,
+            pages[0]['text'],  # Первая страница для content
+            db_content.get('photo_file_id'),
+            db_content.get('buttons_json'),
+            db_content.get('parse_mode', 'HTML'),
+            db_content.get('parent_id'),
+            db_content.get('buttons_per_row'),
+            pages_json
+        )
+
+        if success:
+            await message.answer(f"✅ Новая страница добавлена! Всего страниц: {len(pages)}")
+            await state.update_data(pages=pages)
+        else:
+            await message.answer("❌ Ошибка при сохранении")
+
+    # Вернуться к списку страниц
+    await state.set_state(ContentEditorStates.managing_pages)
+    fake_msg = message.model_copy(update={"text": f"📄 Управление страницами"})
+    return await content_editor_manage_pages(fake_msg, state)
+
+@router.message(ContentEditorStates.managing_pages, F.text == "⬆️ Переместить вверх")
+async def content_editor_move_page_up(message: types.Message, state: FSMContext):
+    """Переместить страницу вверх"""
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+    pages = data.get('pages', [])
+    page_index = data.get('selected_page_index', 0)
+
+    if page_index == 0:
+        await message.answer("❌ Это первая страница, нельзя переместить выше")
+        return
+
+    # Меняем местами с предыдущей страницей
+    pages[page_index], pages[page_index - 1] = pages[page_index - 1], pages[page_index]
+
+    # Сохраняем в БД
+    db_content = await get_button_content(button_label)
+
+    if db_content:
+        pages_json = json.dumps(pages)
+
+        success = await update_button_content(
+            button_label,
+            pages[0]['text'],
+            db_content.get('photo_file_id'),
+            db_content.get('buttons_json'),
+            db_content.get('parse_mode', 'HTML'),
+            db_content.get('parent_id'),
+            db_content.get('buttons_per_row'),
+            pages_json
+        )
+
+        if success:
+            await message.answer(f"✅ Страница перемещена вверх")
+            await state.update_data(pages=pages, selected_page_index=page_index - 1)
+        else:
+            await message.answer("❌ Ошибка при сохранении")
+
+    # Вернуться к списку страниц
+    await state.set_state(ContentEditorStates.managing_pages)
+    fake_msg = message.model_copy(update={"text": f"📄 Управление страницами"})
+    return await content_editor_manage_pages(fake_msg, state)
+
+@router.message(ContentEditorStates.managing_pages, F.text == "⬇️ Переместить вниз")
+async def content_editor_move_page_down(message: types.Message, state: FSMContext):
+    """Переместить страницу вниз"""
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+    pages = data.get('pages', [])
+    page_index = data.get('selected_page_index', 0)
+
+    if page_index == len(pages) - 1:
+        await message.answer("❌ Это последняя страница, нельзя переместить ниже")
+        return
+
+    # Меняем местами со следующей страницей
+    pages[page_index], pages[page_index + 1] = pages[page_index + 1], pages[page_index]
+
+    # Сохраняем в БД
+    db_content = await get_button_content(button_label)
+
+    if db_content:
+        pages_json = json.dumps(pages)
+
+        success = await update_button_content(
+            button_label,
+            pages[0]['text'],
+            db_content.get('photo_file_id'),
+            db_content.get('buttons_json'),
+            db_content.get('parse_mode', 'HTML'),
+            db_content.get('parent_id'),
+            db_content.get('buttons_per_row'),
+            pages_json
+        )
+
+        if success:
+            await message.answer(f"✅ Страница перемещена вниз")
+            await state.update_data(pages=pages, selected_page_index=page_index + 1)
+        else:
+            await message.answer("❌ Ошибка при сохранении")
+
+    # Вернуться к списку страниц
+    await state.set_state(ContentEditorStates.managing_pages)
+    fake_msg = message.model_copy(update={"text": f"📄 Управление страницами"})
+    return await content_editor_manage_pages(fake_msg, state)
+
+@router.message(ContentEditorStates.managing_pages, F.text == "⬅️ Назад")
+async def content_editor_pages_back(message: types.Message, state: FSMContext):
+    """Вернуться из управления страницами"""
+    data = await state.get_data()
+    button_label = data.get('editing_button_label')
+
     await state.set_state(ContentEditorStates.selecting_menu)
     fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
     return await content_editor_select(fake_msg, state)
