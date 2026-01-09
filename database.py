@@ -560,3 +560,49 @@ async def set_setting(key, value):
     except Exception as e:
         print(f"Error setting '{key}': {e}")
         return False
+
+async def reorder_button_to_position(label, target_position):
+    """Переместить кнопку на указанную позицию"""
+    if pool is None:
+        return False
+    try:
+        async with pool.acquire() as conn:
+            # Получаем все кнопки в текущем порядке
+            buttons = await conn.fetch(
+                'SELECT label, row_index, col_index FROM keyboard_buttons ORDER BY row_index, col_index'
+            )
+
+            if not buttons or target_position >= len(buttons):
+                return False
+
+            # Находим текущую кнопку
+            current_index = None
+            for idx, btn in enumerate(buttons):
+                if btn['label'] == label:
+                    current_index = idx
+                    break
+
+            if current_index is None:
+                return False
+
+            # Преобразуем в список для манипуляций
+            buttons_list = list(buttons)
+
+            # Перемещаем кнопку
+            button_to_move = buttons_list.pop(current_index)
+            buttons_list.insert(target_position, button_to_move)
+
+            # Обновляем позиции всех кнопок
+            for idx, btn in enumerate(buttons_list):
+                row_idx = idx // 2  # 2 кнопки в ряду
+                col_idx = idx % 2
+                await conn.execute(
+                    'UPDATE keyboard_buttons SET row_index = $1, col_index = $2 WHERE label = $3',
+                    row_idx, col_idx, btn['label']
+                )
+
+            print(f"[DB_DEBUG] Reordered '{label}' to position {target_position}")
+            return True
+    except Exception as e:
+        print(f"Error reordering button to position: {e}")
+        return False

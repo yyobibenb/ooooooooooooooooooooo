@@ -17,7 +17,7 @@ from database import (init_db, add_user, get_all_users, save_broadcast, log_clic
                       update_button_content, get_button_content, get_all_keyboard_buttons,
                       add_keyboard_button, delete_keyboard_button, rename_keyboard_button,
                       generate_short_id, get_button_by_short_id, move_button_up, move_button_down,
-                      get_setting, set_setting)
+                      get_setting, set_setting, reorder_button_to_position)
 
 # Load chat continuation texts
 CHATS_CONTINUATION_FILE = "chats_continuation.json"
@@ -755,63 +755,83 @@ async def process_reordering(message: types.Message, state: FSMContext):
     if message.text == "⬅️ Назад":
         return await manage_menu(message, state)
 
-    if message.text == "⬆️ Вверх":
-        # Перемещаем выбранную кнопку вверх
-        data = await state.get_data()
-        selected_label = data.get('reorder_selected_button')
+    data = await state.get_data()
+    selected_label = data.get('reorder_selected_button')
 
+    # Если выбрана позиция куда переместить
+    if message.text.startswith("📍 Позиция "):
         if not selected_label:
-            await message.answer("❌ Кнопка не выбрана")
-            return
+            await message.answer("❌ Сначала выберите кнопку для перемещения")
+            return await show_reorder_interface(message, state)
 
-        success = await move_button_up(selected_label)
+        # Парсим номер позиции
+        try:
+            position = int(message.text.split(" ")[2]) - 1  # "📍 Позиция 3" -> 2 (индекс)
+        except:
+            await message.answer("❌ Ошибка при определении позиции")
+            return await show_reorder_interface(message, state)
+
+        # Перемещаем кнопку на новую позицию
+        buttons = await get_all_keyboard_buttons()
+
+        # Находим индекс выбранной кнопки
+        current_index = None
+        for idx, btn in enumerate(buttons):
+            if btn['label'] == selected_label:
+                current_index = idx
+                break
+
+        if current_index is None:
+            await message.answer("❌ Кнопка не найдена")
+            return await show_reorder_interface(message, state)
+
+        if current_index == position:
+            await message.answer("ℹ️ Кнопка уже находится на этой позиции")
+            return await show_reorder_interface(message, state)
+
+        # Переставляем кнопки
+        success = await reorder_button_to_position(selected_label, position)
+
         if success:
-            await message.answer(f"✅ Кнопка '{selected_label}' перемещена вверх")
+            await message.answer(f"✅ Кнопка '{selected_label}' перемещена на позицию {position + 1}")
         else:
-            await message.answer(f"❌ Не удалось переместить кнопку вверх (возможно, она уже первая)")
+            await message.answer("❌ Ошибка при перемещении кнопки")
 
-        # Показываем обновлённый список
-        await show_reorder_interface(message, state)
+        await state.update_data(reorder_selected_button=None)
+        return await show_reorder_interface(message, state)
 
-    elif message.text == "⬇️ Вниз":
-        # Перемещаем выбранную кнопку вниз
-        data = await state.get_data()
-        selected_label = data.get('reorder_selected_button')
-
-        if not selected_label:
-            await message.answer("❌ Кнопка не выбрана")
-            return
-
-        success = await move_button_down(selected_label)
-        if success:
-            await message.answer(f"✅ Кнопка '{selected_label}' перемещена вниз")
-        else:
-            await message.answer(f"❌ Не удалось переместить кнопку вниз (возможно, она уже последняя)")
-
-        # Показываем обновлённый список
-        await show_reorder_interface(message, state)
-
+    # Если выбрана кнопка для перемещения
     elif message.text.startswith("🔹 "):
-        # Выбрана кнопка для перемещения
-        label = message.text[2:]
+        label = message.text[2:].strip()
         await state.update_data(reorder_selected_button=label)
 
-        # Показываем кнопки управления
-        kb = [
-            [KeyboardButton(text="⬆️ Вверх"), KeyboardButton(text="⬇️ Вниз")],
-            [KeyboardButton(text="✅ Готово")],
-            [KeyboardButton(text="⬅️ Назад")]
-        ]
+        # Показываем список позиций
+        buttons = await get_all_keyboard_buttons()
+
+        text = f"🔄 <b>Перемещение кнопки: {label}</b>\n\n"
+        text += "Текущий порядок:\n"
+
+        for idx, btn in enumerate(buttons, 1):
+            marker = "👉 " if btn['label'] == label else f"{idx}. "
+            text += f"{marker}{btn['label']}\n"
+
+        text += "\nВыберите позицию куда переместить:"
+
+        # Создаём кнопки с позициями
+        kb = []
+        for idx in range(len(buttons)):
+            kb.append([KeyboardButton(text=f"📍 Позиция {idx + 1}")])
+        kb.append([KeyboardButton(text="⬅️ Назад")])
 
         await message.answer(
-            f"🔹 Выбрана кнопка: <b>{label}</b>\n\nИспользуйте кнопки для перемещения:",
+            text,
             reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
             parse_mode=ParseMode.HTML
         )
 
-    elif message.text == "✅ Готово":
-        await message.answer("✅ Порядок кнопок изменён!")
-        await manage_menu(message, state)
+    else:
+        await message.answer("❌ Неизвестная команда")
+        return await show_reorder_interface(message, state)
 
 @router.message(AdminMenuStates.adding_button_label)
 async def add_btn_label(message: types.Message, state: FSMContext):
