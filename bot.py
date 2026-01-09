@@ -1518,16 +1518,29 @@ async def content_editor_select(message: types.Message, state: FSMContext):
 
     kb.append([KeyboardButton(text="⬅️ Назад")])
 
-    text_preview = current_text[:300] + "..." if len(current_text) > 300 else current_text
+    # Убираем HTML теги из превью, чтобы избежать ошибок парсинга при обрезке
+    import re
+    clean_text = re.sub(r'<[^>]+>', '', current_text)
+    text_preview = clean_text[:300] + "..." if len(clean_text) > 300 else clean_text
 
-    await message.answer(
-        f"✏️ <b>Редактирование: {button_label}</b>\n\n"
-        f"📄 <b>Текст:</b>\n{text_preview}\n\n"
-        f"🖼 <b>Фото:</b> {has_photo}\n\n"
-        f"💡 Нажмите на инлайн-кнопку для редактирования",
-        reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
-        parse_mode=ParseMode.HTML
-    )
+    try:
+        await message.answer(
+            f"✏️ <b>Редактирование: {button_label}</b>\n\n"
+            f"📄 <b>Текст:</b>\n{text_preview}\n\n"
+            f"🖼 <b>Фото:</b> {has_photo}\n\n"
+            f"💡 Нажмите на инлайн-кнопку для редактирования",
+            reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        # Если всё равно ошибка - отправляем совсем без форматирования
+        await message.answer(
+            f"Редактирование: {button_label}\n\n"
+            f"Текст:\n{text_preview}\n\n"
+            f"Фото: {has_photo}\n\n"
+            f"Нажмите на инлайн-кнопку для редактирования",
+            reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+        )
 
 # Обработка нажатия на инлайн-кнопку для управления
 @router.message(ContentEditorStates.selecting_menu, F.text.startswith("🔘 "))
