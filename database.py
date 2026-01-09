@@ -124,6 +124,14 @@ async def init_db():
             except:
                 pass
 
+            # Создаём таблицу настроек
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS settings (
+                    key VARCHAR(255) PRIMARY KEY,
+                    value TEXT
+                )
+            ''')
+
         print("✓ Database initialized successfully")
     except Exception as e:
         print(f"✗ Database initialization error: {e}")
@@ -522,4 +530,33 @@ async def move_button_down(label):
             return False
     except Exception as e:
         print(f"Error moving button down: {e}")
+        return False
+
+async def get_setting(key, default=None):
+    """Get setting value from database"""
+    if pool is None:
+        return default
+    try:
+        async with pool.acquire() as conn:
+            result = await conn.fetchrow('SELECT value FROM settings WHERE key = $1', key)
+            return result['value'] if result else default
+    except Exception as e:
+        print(f"Error getting setting '{key}': {e}")
+        return default
+
+async def set_setting(key, value):
+    """Set setting value in database"""
+    if pool is None:
+        print("Database pool not initialized. Skipping set_setting.")
+        return False
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO settings (key, value)
+                VALUES ($1, $2)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            ''', key, value)
+            return True
+    except Exception as e:
+        print(f"Error setting '{key}': {e}")
         return False

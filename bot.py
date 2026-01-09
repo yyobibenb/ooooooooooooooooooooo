@@ -16,7 +16,8 @@ from aiogram.enums import ParseMode
 from database import (init_db, add_user, get_all_users, save_broadcast, log_click, get_stats,
                       update_button_content, get_button_content, get_all_keyboard_buttons,
                       add_keyboard_button, delete_keyboard_button, rename_keyboard_button,
-                      generate_short_id, get_button_by_short_id, move_button_up, move_button_down)
+                      generate_short_id, get_button_by_short_id, move_button_up, move_button_down,
+                      get_setting, set_setting)
 
 # Load chat continuation texts
 CHATS_CONTINUATION_FILE = "chats_continuation.json"
@@ -169,16 +170,7 @@ def create_page_navigation_buttons(button_id, current_page, total_pages):
 
     return buttons
 
-class AdminMenuStates(StatesGroup):
-    main = State()
-    managing_menu = State()
-    adding_button_label = State()
-    adding_button_content = State()
-    adding_button_photo = State()
-    adding_inline_button_text = State()
-    adding_inline_button_url = State()
-    confirming_button = State()
-    creating_nested = State() # For deep nesting
+# AdminMenuStates перенесен ниже (строка ~470)
 
 class BroadcastStates(StatesGroup):
     waiting_for_text = State()
@@ -431,13 +423,22 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     user_name = message.from_user.first_name or "Пользователь"
     user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
-    start_text = (
-        f"<b>Привет</b>, {user_link} 😎\n\n"
-        "Меня зовут Ламби, я помогу с поиском нужной тебе информации.\n\n"
-        "А благодаря инлайн-режиму, ты можешь делиться информацией не только быстро и в пару кликов, но и где угодно: в личных переписках, чатах и каналах.\n"
-        "<blockquote>Чтобы воспользоваться инлайн-режимом, введи в строке ввода сообщения юзер бота и выбирай нужный пункт</blockquote>\n\n"
-        "<b>Блог владельца: t.me/+2m6vI9IYsBA0NTYy</b>\n"
-        "<b>Лучший чат: t.me/+Mo58T7pcKxpmNjYy</b>")
+
+    # Получаем текст из БД или используем дефолтный
+    start_text_template = await get_setting('start_text')
+    if not start_text_template:
+        start_text_template = (
+            "<b>Привет</b>, {user_link} 😎\n\n"
+            "Меня зовут Ламби, я помогу с поиском нужной тебе информации.\n\n"
+            "А благодаря инлайн-режиму, ты можешь делиться информацией не только быстро и в пару кликов, но и где угодно: в личных переписках, чатах и каналах.\n"
+            "<blockquote>Чтобы воспользоваться инлайн-режимом, введи в строке ввода сообщения юзер бота и выбирай нужный пункт</blockquote>\n\n"
+            "<b>Блог владельца: t.me/+2m6vI9IYsBA0NTYy</b>\n"
+            "<b>Лучший чат: t.me/+Mo58T7pcKxpmNjYy</b>"
+        )
+
+    # Подставляем user_link
+    start_text = start_text_template.replace("{user_link}", user_link)
+
     keyboard = await get_dynamic_keyboard(user_id)
     try:
         await message.answer_photo(photo=types.FSInputFile("start_image.jpg"),
@@ -461,6 +462,7 @@ async def admin_button(message: types.Message, state: FSMContext):
                   [KeyboardButton(text="📊 Статистика")],
                   [KeyboardButton(text="🏗 Управление меню")],
                   [KeyboardButton(text="✏️ Редактор контента")],
+                  [KeyboardButton(text="📝 Текст /start")],
                   [KeyboardButton(text="🔙 Выйти")]],
         resize_keyboard=True)
     await message.answer("🔐 <b>Админ-панель</b>\n\nВыберите действие:",
@@ -480,6 +482,54 @@ class AdminMenuStates(StatesGroup):
     button_action_menu = State()  # Меню действий над кнопкой
     renaming_button = State()  # Переименование кнопки
     reordering_buttons = State()  # Изменение порядка кнопок
+    editing_start_text = State()  # Редактирование текста /start
+
+@router.message(F.text == "📝 Текст /start")
+async def edit_start_text_button(message: types.Message, state: FSMContext):
+    """Редактирование текста /start"""
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    # Получаем текущий текст
+    current_text = await get_setting('start_text')
+    if not current_text:
+        current_text = (
+            "<b>Привет</b>, {user_link} 😎\n\n"
+            "Меня зовут Ламби, я помогу с поиском нужной тебе информации.\n\n"
+            "А благодаря инлайн-режиму, ты можешь делиться информацией не только быстро и в пару кликов, но и где угодно: в личных переписках, чатах и каналах.\n"
+            "<blockquote>Чтобы воспользоваться инлайн-режимом, введи в строке ввода сообщения юзер бота и выбирай нужный пункт</blockquote>\n\n"
+            "<b>Блог владельца: t.me/+2m6vI9IYsBA0NTYy</b>\n"
+            "<b>Лучший чат: t.me/+Mo58T7pcKxpmNjYy</b>"
+        )
+
+    await state.set_state(AdminMenuStates.editing_start_text)
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Отмена")]], resize_keyboard=True)
+    await message.answer(
+        f"📝 <b>Редактирование текста /start</b>\n\n"
+        f"Текущий текст:\n{current_text}\n\n"
+        f"Отправьте новый текст (поддерживается HTML).\n"
+        f"Используйте <code>{{user_link}}</code> для упоминания пользователя.",
+        reply_markup=kb,
+        parse_mode=ParseMode.HTML
+    )
+
+@router.message(AdminMenuStates.editing_start_text)
+async def save_start_text(message: types.Message, state: FSMContext):
+    """Сохранение нового текста /start"""
+    if message.text == "⬅️ Отмена":
+        await state.clear()
+        return await admin_button(message, state)
+
+    new_text = message.text
+    success = await set_setting('start_text', new_text)
+
+    if success:
+        await message.answer("✅ Текст /start обновлён!")
+    else:
+        await message.answer("❌ Ошибка при сохранении текста")
+
+    await state.clear()
+    await admin_button(message, state)
 
 @router.message(F.text == "🏗 Управление меню")
 async def manage_menu(message: types.Message, state: FSMContext):
@@ -5060,15 +5110,13 @@ async def inline_query_handler(inline_query: InlineQuery):
                 for b in buttons:
                     btn_text = b.get('text', '???')
 
-                    # Пропускаем кнопки назад
+                    # Пропускаем кнопки назад и меню (callback не работает в inline mode)
                     if b.get('url') == 'меню' or btn_text in ['🔙 Назад', '🔙 В начало']:
                         continue
 
-                    if b.get('url'):
+                    # В inline mode показываем только URL кнопки
+                    if b.get('url') and b.get('url') != 'меню':
                         button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
-                    else:
-                        target_id = b.get('id') or f"{button_label}:{btn_text}"
-                        button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=make_callback_data(target_id)))
 
                 # Группируем кнопки
                 default_per_row = db_content.get('buttons_per_row', 1)
@@ -5076,15 +5124,8 @@ async def inline_query_handler(inline_query: InlineQuery):
             except Exception as e:
                 print(f"[INLINE] Error parsing buttons for {button_label}: {e}")
 
-        # Добавляем навигацию по страницам если есть
-        if db_content.get('pages_json'):
-            try:
-                pages = json.loads(db_content['pages_json'])
-                if len(pages) > 1:
-                    nav_buttons = create_page_navigation_buttons(button_label, 0, len(pages))
-                    inline_keyboard_list.append(nav_buttons)
-            except:
-                pass
+        # Навигация по страницам не работает в inline mode (callback не поддерживается)
+        # Поэтому если есть pages_json, показываем только первую страницу без навигации
 
         # Создаём клавиатуру
         keyboard = InlineKeyboardMarkup(inline_keyboard=inline_keyboard_list) if inline_keyboard_list else None
