@@ -918,21 +918,40 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
     photo = item['photo_file_id']
 
     try:
-        # For dynamic menus, we always try to edit the message to provide a smooth transition
-        if photo:
-            # If there's a photo, we use input_media to edit if possible, 
-            # or just send new if it's easier to maintain state
-            await query.message.answer_photo(photo, caption=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-            await query.message.delete()
+        # Проверяем, это inline mode или обычный чат
+        if query.inline_message_id:
+            # Inline mode - используем inline_message_id
+            logger.info(f"Updating INLINE MODE message (inline_message_id: {query.inline_message_id})")
+            if photo:
+                await query.bot.edit_message_media(
+                    inline_message_id=query.inline_message_id,
+                    media=types.InputMediaPhoto(media=photo, caption=text, parse_mode=ParseMode.HTML),
+                    reply_markup=reply_markup
+                )
+            else:
+                await query.bot.edit_message_text(
+                    inline_message_id=query.inline_message_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode=ParseMode.HTML
+                )
         else:
-            await safe_edit_message(query, text, reply_markup=reply_markup)
+            # Обычный чат - используем query.message
+            if photo:
+                # Если есть фото, отправляем новое сообщение и удаляем старое
+                await query.message.answer_photo(photo, caption=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+                await query.message.delete()
+            else:
+                # Редактируем текст сообщения
+                await query.message.edit_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"Error displaying button content: {e}")
-        # If edit fails (e.g. message is too old or same content), send as new
-        if photo:
-            await query.message.answer_photo(photo, caption=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-        else:
-            await query.message.answer(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+        # Fallback только для обычного чата (в inline mode нельзя отправить новое сообщение)
+        if not query.inline_message_id and query.message:
+            if photo:
+                await query.message.answer_photo(photo, caption=text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+            else:
+                await query.message.answer(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
 
 @router.message(AdminMenuStates.adding_inline_button_url)
 async def add_inline_url(message: types.Message, state: FSMContext):
@@ -3728,18 +3747,38 @@ async def handle_page_navigation(query: types.CallbackQuery):
         # Обновляем сообщение
         photo = db_content.get('photo_file_id')
 
-        if photo:
-            await query.message.edit_media(
-                media=types.InputMediaPhoto(media=photo, caption=page_text, parse_mode=ParseMode.HTML),
-                reply_markup=kb
-            )
+        # Проверяем, это inline mode или обычный чат
+        if query.inline_message_id:
+            # Inline mode - используем inline_message_id
+            print(f"[PAGES] Updating INLINE MODE message (inline_message_id: {query.inline_message_id})")
+            if photo:
+                await query.bot.edit_message_media(
+                    inline_message_id=query.inline_message_id,
+                    media=types.InputMediaPhoto(media=photo, caption=page_text, parse_mode=ParseMode.HTML),
+                    reply_markup=kb
+                )
+            else:
+                await query.bot.edit_message_text(
+                    inline_message_id=query.inline_message_id,
+                    text=page_text,
+                    reply_markup=kb,
+                    parse_mode=ParseMode.HTML,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True)
+                )
         else:
-            await query.message.edit_text(
-                page_text,
-                reply_markup=kb,
-                parse_mode=ParseMode.HTML,
-                link_preview_options=LinkPreviewOptions(is_disabled=True)
-            )
+            # Обычный чат - используем query.message
+            if photo:
+                await query.message.edit_media(
+                    media=types.InputMediaPhoto(media=photo, caption=page_text, parse_mode=ParseMode.HTML),
+                    reply_markup=kb
+                )
+            else:
+                await query.message.edit_text(
+                    page_text,
+                    reply_markup=kb,
+                    parse_mode=ParseMode.HTML,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True)
+                )
 
         # Убрали текст "Страница X/Y" при переключении
         await query.answer()
@@ -3909,28 +3948,52 @@ async def process_dynamic_inline(query: types.CallbackQuery, state: FSMContext):
             print(f"[BOT_DEBUG_VERBOSE] Created keyboard with {len(inline_keyboard_list)} rows")
 
         try:
-            if photo:
-                print(f"[BOT_DEBUG_VERBOSE] Updating message as Media (Photo: {photo[:15]}...)")
-                await query.message.edit_media(
-                    media=types.InputMediaPhoto(media=photo, caption=msg_text, parse_mode=ParseMode.HTML),
-                    reply_markup=kb
-                )
+            # Проверяем, это inline mode или обычный чат
+            if query.inline_message_id:
+                # Inline mode - используем inline_message_id
+                print(f"[BOT_DEBUG_VERBOSE] Updating INLINE MODE message (inline_message_id: {query.inline_message_id})")
+                if photo:
+                    print(f"[BOT_DEBUG_VERBOSE] Updating as Media (Photo: {photo[:15]}...)")
+                    await query.bot.edit_message_media(
+                        inline_message_id=query.inline_message_id,
+                        media=types.InputMediaPhoto(media=photo, caption=msg_text, parse_mode=ParseMode.HTML),
+                        reply_markup=kb
+                    )
+                else:
+                    print(f"[BOT_DEBUG_VERBOSE] Updating as Text")
+                    await query.bot.edit_message_text(
+                        inline_message_id=query.inline_message_id,
+                        text=msg_text,
+                        reply_markup=kb,
+                        parse_mode=ParseMode.HTML,
+                        link_preview_options=LinkPreviewOptions(is_disabled=True)
+                    )
             else:
-                print(f"[BOT_DEBUG_VERBOSE] Updating message as Text")
-                await query.message.edit_text(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML,
-                                            link_preview_options=LinkPreviewOptions(is_disabled=True))
+                # Обычный чат - используем query.message
+                print(f"[BOT_DEBUG_VERBOSE] Updating REGULAR chat message")
+                if photo:
+                    print(f"[BOT_DEBUG_VERBOSE] Updating as Media (Photo: {photo[:15]}...)")
+                    await query.message.edit_media(
+                        media=types.InputMediaPhoto(media=photo, caption=msg_text, parse_mode=ParseMode.HTML),
+                        reply_markup=kb
+                    )
+                else:
+                    print(f"[BOT_DEBUG_VERBOSE] Updating as Text")
+                    await query.message.edit_text(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML,
+                                                link_preview_options=LinkPreviewOptions(is_disabled=True))
             print(f"[BOT_DEBUG_VERBOSE] ✅ Message updated successfully")
         except Exception as e:
             if "message is not modified" in str(e):
                 print("[BOT_DEBUG_VERBOSE] Message content is identical, nothing to update.")
             else:
                 print(f"[BOT_DEBUG_VERBOSE] ❌ ERROR updating message: {e}")
-                # Fallback to answer if edit fails
-                if photo:
-                    await query.message.answer_photo(photo, caption=msg_text, reply_markup=kb, parse_mode=ParseMode.HTML)
-                else:
-                    await query.message.answer(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML,
-                                             link_preview_options=LinkPreviewOptions(is_disabled=True))
+                # Fallback только для обычного чата (в inline mode нельзя отправить новое сообщение)
+                if not query.inline_message_id and query.message:
+                    if photo:
+                        await query.message.answer_photo(photo, caption=msg_text, reply_markup=kb, parse_mode=ParseMode.HTML)
+                    else:
+                        await query.message.answer(msg_text, reply_markup=kb, parse_mode=ParseMode.HTML,
+                                                 link_preview_options=LinkPreviewOptions(is_disabled=True))
     else:
         print(f"[BOT_DEBUG_VERBOSE] ❌ FAIL: Content NOT found in DB for ID: '{button_id}'")
         await query.answer("❌ Раздел не найден в базе данных", show_alert=True)
