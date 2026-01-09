@@ -5231,21 +5231,34 @@ async def inline_query_handler(inline_query: InlineQuery):
         # Создаем клавиатуру с инлайн-кнопками из buttons_json
         inline_keyboard_list = []
 
+        print(f"[INLINE] Button '{button_label}': buttons_json = {db_content.get('buttons_json')}")
+
         if db_content.get('buttons_json'):
             try:
                 buttons = json.loads(db_content['buttons_json'])
                 button_objects = []
 
+                print(f"[INLINE] Processing buttons for '{button_label}': {len(buttons)} buttons")
+
                 for b in buttons:
                     btn_text = b.get('text', '???')
+                    btn_url = b.get('url', '')
+
+                    print(f"[INLINE]   Button: '{btn_text}', URL: '{btn_url}'")
 
                     # Пропускаем кнопки назад и меню (callback не работает в inline mode)
-                    if b.get('url') == 'меню' or btn_text in ['🔙 Назад', '🔙 В начало']:
+                    if btn_url == 'меню' or btn_text in ['🔙 Назад', '🔙 В начало']:
+                        print(f"[INLINE]   Skipped (back/menu button)")
                         continue
 
                     # В inline mode показываем только URL кнопки
-                    if b.get('url') and b.get('url') != 'меню':
-                        button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
+                    if btn_url and btn_url != 'меню':
+                        button_objects.append(InlineKeyboardButton(text=btn_text, url=btn_url))
+                        print(f"[INLINE]   Added URL button: '{btn_text}' -> {btn_url}")
+                    else:
+                        print(f"[INLINE]   Skipped (no URL, callback buttons don't work in inline mode)")
+
+                print(f"[INLINE] Total buttons added: {len(button_objects)}")
 
                 # Группируем кнопки
                 default_per_row = db_content.get('buttons_per_row', 1)
