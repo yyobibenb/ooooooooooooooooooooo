@@ -5246,17 +5246,20 @@ async def inline_query_handler(inline_query: InlineQuery):
 
                     print(f"[INLINE]   Button: '{btn_text}', URL: '{btn_url}'")
 
-                    # Пропускаем кнопки назад и меню (callback не работает в inline mode)
+                    # Пропускаем кнопки назад
                     if btn_url == 'меню' or btn_text in ['🔙 Назад', '🔙 В начало']:
                         print(f"[INLINE]   Skipped (back/menu button)")
                         continue
 
-                    # В inline mode показываем только URL кнопки
+                    # Добавляем кнопку (URL или callback)
                     if btn_url and btn_url != 'меню':
                         button_objects.append(InlineKeyboardButton(text=btn_text, url=btn_url))
                         print(f"[INLINE]   Added URL button: '{btn_text}' -> {btn_url}")
                     else:
-                        print(f"[INLINE]   Skipped (no URL, callback buttons don't work in inline mode)")
+                        # Callback кнопки работают когда inline используется в боте
+                        target_id = b.get('id') or f"{button_label}:{btn_text}"
+                        button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=make_callback_data(target_id)))
+                        print(f"[INLINE]   Added callback button: '{btn_text}' -> {target_id}")
 
                 print(f"[INLINE] Total buttons added: {len(button_objects)}")
 
