@@ -4936,98 +4936,114 @@ async def inline_query_handler(inline_query: InlineQuery):
     query = inline_query.query.lower().strip()
     results = []
 
-    # Ищем по всем разделам главного меню
-    search_sections = [
-        "garant_checker", "terminology", "cpm_pdp", "analytics", "chats",
-        "bots", "useful_sites", "promo_codes"
-    ]
+    # Получаем все кнопки клавиатуры из БД
+    keyboard_buttons = await get_all_keyboard_buttons()
 
-    for section_key in search_sections:
-        section = MENU_STRUCTURE.get(section_key)
-        if not section:
+    if not keyboard_buttons:
+        # Если нет кнопок в БД, отправляем пустой результат
+        await inline_query.answer([], cache_time=0, is_personal=True)
+        return
+
+    for kb_button in keyboard_buttons:
+        button_label = kb_button.get('label') if isinstance(kb_button, dict) else kb_button.label
+
+        # Поиск по названию кнопки
+        if query and query not in button_label.lower():
             continue
 
-        label = section.get('label', '').lower()
+        # Получаем контент кнопки из БД
+        db_content = await get_button_content(button_label)
 
-        # Если найдено в названии раздела или query пуст
-        if query in label or not query:
-            # Получаем полный текст раздела - обязательно непустой
-            full_text = section.get('text', '')
-            title = section.get('label', '')
+        if not db_content:
+            continue
 
-            # Если нет текста, проверяем страницы (для "Терминология" и подобных)
-            if not full_text or not full_text.strip():
-                if 'pages' in section and section['pages']:
-                    # Берём текст первой страницы
-                    first_page = section['pages'][0]
-                    if isinstance(first_page, dict):
-                        full_text = first_page.get('text', '')
-                    else:
-                        full_text = first_page
+        # Получаем текст
+        full_text = db_content.get('content', '')
 
-            # Гарантируем, что есть текст для отправки
-            if not full_text or not full_text.strip():
-                full_text = title if title else 'Раздел'
-
-            # Убираем HTML теги только для описания (preview)
-            clean_text = re.sub(r'<[^>]+>', '', full_text)
-            description = clean_text[:100] if clean_text else title
-
-            # Финальная проверка - текст не должен быть пустым
-            final_text = full_text.strip() if full_text else title
-            if not final_text:
-                final_text = 'Раздел'
-
-            # Создаем клавиатуру с кнопками как в основном боте
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="🔙 Назад", callback_data="back_nav")
-            ]])  # Default - back button
-
-            # Если есть submenu, показываем кнопки submenu
-            if 'submenu' in section:
-                submenu_keyboard = get_inline_keyboard(section["submenu"],
-                                                       section_key,
-                                                       add_back_button=False)
-                if submenu_keyboard:
-                    keyboard = submenu_keyboard
-            # Для промокодов убираем кнопку "Назад" в инлайн режиме
-            elif section_key == "promo_codes":
-                keyboard = InlineKeyboardMarkup(inline_keyboard=[])
-            # Если есть pages, показываем кнопки навигации
-            elif 'pages' in section:
-                nav_keyboard = get_nav_keyboard_inline(section_key, '', 0)
-                if nav_keyboard:
-                    keyboard = nav_keyboard
-
-            # Уникальный id - иначе Telegram может закешировать старый результат
-            unique_id = f"{section_key}_{hash(query or 'all')}"
-            if len(unique_id) > 64:
-                unique_id = unique_id[:64]
-
+        # Если есть pages_json, берём первую страницу
+        if db_content.get('pages_json'):
             try:
-                result = InlineQueryResultArticle(
-                    id=unique_id,
-                    title=title if title else 'Раздел',
-                    description=description if description else title,
-                    input_message_content=InputTextMessageContent(
-                        # Полный текст с HTML форматированием - обязательно непустой
-                        message_text=final_text,
-                        parse_mode=ParseMode.HTML,
-                        link_preview_options=LinkPreviewOptions(
-                            is_disabled=True)),
-                    reply_markup=keyboard  # Кнопки как в обычном боте
-                )
-                results.append(result)
-            except Exception as e:
-                logger.error(
-                    f"Error creating inline result for {section_key}: {e}")
-                continue
+                pages = json.loads(db_content['pages_json'])
+                if pages:
+                    full_text = pages[0].get('text', full_text)
+            except:
+                pass
 
-    # ВСЕГДА отвечаем на inline запрос (обязательно!)
+        # Если текста нет, используем название
+        if not full_text or not full_text.strip():
+            full_text = button_label
+
+        # Убираем HTML теги только для описания (preview)
+        clean_text = re.sub(r'<[^>]+>', '', full_text)
+        description = clean_text[:100] if clean_text else button_label
+
+        # Создаем клавиатуру с инлайн-кнопками из buttons_json
+        inline_keyboard_list = []
+
+        if db_content.get('buttons_json'):
+            try:
+                buttons = json.loads(db_content['buttons_json'])
+                button_objects = []
+
+                for b in buttons:
+                    btn_text = b.get('text', '???')
+
+                    # Пропускаем кнопки назад
+                    if b.get('url') == 'меню' or btn_text in ['🔙 Назад', '🔙 В начало']:
+                        continue
+
+                    if b.get('url'):
+                        button_objects.append(InlineKeyboardButton(text=btn_text, url=b['url']))
+                    else:
+                        target_id = b.get('id') or f"{button_label}:{btn_text}"
+                        button_objects.append(InlineKeyboardButton(text=btn_text, callback_data=make_callback_data(target_id)))
+
+                # Группируем кнопки
+                default_per_row = db_content.get('buttons_per_row', 1)
+                inline_keyboard_list = group_buttons_by_row(button_objects, buttons, default_per_row)
+            except Exception as e:
+                print(f"[INLINE] Error parsing buttons for {button_label}: {e}")
+
+        # Добавляем навигацию по страницам если есть
+        if db_content.get('pages_json'):
+            try:
+                pages = json.loads(db_content['pages_json'])
+                if len(pages) > 1:
+                    nav_buttons = create_page_navigation_buttons(button_label, 0, len(pages))
+                    inline_keyboard_list.append(nav_buttons)
+            except:
+                pass
+
+        # Создаём клавиатуру
+        keyboard = InlineKeyboardMarkup(inline_keyboard=inline_keyboard_list) if inline_keyboard_list else None
+
+        # Уникальный id
+        unique_id = f"{button_label}_{hash(query or 'all')}"
+        if len(unique_id) > 64:
+            unique_id = unique_id[:64]
+
+        try:
+            result = InlineQueryResultArticle(
+                id=unique_id,
+                title=button_label,
+                description=description if description else button_label,
+                input_message_content=InputTextMessageContent(
+                    message_text=full_text,
+                    parse_mode=ParseMode.HTML,
+                    link_preview_options=LinkPreviewOptions(is_disabled=True)
+                ),
+                reply_markup=keyboard
+            )
+            results.append(result)
+        except Exception as e:
+            logger.error(f"Error creating inline result for {button_label}: {e}")
+            continue
+
+    # Отвечаем на inline запрос
     await inline_query.answer(
         results,
         cache_time=0,
-        is_personal=True  # Персональные результаты для каждого пользователя
+        is_personal=True
     )
 
 
