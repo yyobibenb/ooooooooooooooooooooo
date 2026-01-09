@@ -4,12 +4,13 @@
 """
 
 import asyncio
-from database import init_db, pool
+import database
+from database import init_db
 
 async def check():
     await init_db()
 
-    async with pool.acquire() as conn:
+    async with database.pool.acquire() as conn:
         print("=" * 60)
         print("ПРОВЕРКА ПОСЛЕ МИГРАЦИИ")
         print("=" * 60)

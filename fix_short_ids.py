@@ -4,12 +4,13 @@
 """
 
 import asyncio
-from database import init_db, pool, generate_short_id
+import database
+from database import init_db, generate_short_id
 
 async def fix_all_short_ids():
     await init_db()
 
-    async with pool.acquire() as conn:
+    async with database.pool.acquire() as conn:
         # Получаем все кнопки без short_id
         buttons = await conn.fetch("""
             SELECT button_id FROM button_content

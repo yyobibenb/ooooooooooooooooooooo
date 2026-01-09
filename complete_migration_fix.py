@@ -7,7 +7,8 @@
 """
 
 import asyncio
-from database import init_db, pool, generate_short_id
+import database
+from database import init_db, generate_short_id
 import json
 
 async def main():
@@ -17,7 +18,7 @@ async def main():
 
     await init_db()
 
-    async with pool.acquire() as conn:
+    async with database.pool.acquire() as conn:
         # ШАГ 1: Добавить short_id всем кнопкам
         print("\n📝 ШАГ 1: Добавление short_id")
         buttons_without_short = await conn.fetch("""
