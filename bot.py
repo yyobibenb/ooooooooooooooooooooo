@@ -1206,9 +1206,16 @@ async def content_editor_select(message: types.Message, state: FSMContext):
         try:
             pages = json.loads(db_content['pages_json'])
             if pages:
+                print(f"[CONTENT_EDITOR] Adding pages button: {len(pages)} pages")
                 kb.append([KeyboardButton(text=f"📄 Управление страницами ({len(pages)} стр.)")])
-        except:
-            pass
+            else:
+                print(f"[CONTENT_EDITOR] pages_json empty for '{button_label}'")
+        except Exception as e:
+            print(f"[CONTENT_EDITOR] Error parsing pages_json: {e}")
+    else:
+        print(f"[CONTENT_EDITOR] No pages_json for '{button_label}'")
+        if db_content:
+            print(f"[CONTENT_EDITOR] db_content keys: {db_content.keys()}")
 
     # Добавляем каждую инлайн-кнопку как отдельную кнопку в клавиатуре
     if all_buttons:
