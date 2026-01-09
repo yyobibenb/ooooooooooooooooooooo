@@ -817,10 +817,15 @@ async def process_reordering(message: types.Message, state: FSMContext):
 
         text += "\nВыберите позицию куда переместить:"
 
-        # Создаём кнопки с позициями
+        # Создаём кнопки с позициями (по 2 в ряд как реальные кнопки)
         kb = []
         for idx in range(len(buttons)):
-            kb.append([KeyboardButton(text=f"📍 Позиция {idx + 1}")])
+            button = KeyboardButton(text=f"📍 Позиция {idx + 1}")
+            # Группируем по 2 кнопки в ряд
+            if idx % 2 == 0:
+                kb.append([button])
+            else:
+                kb[-1].append(button)
         kb.append([KeyboardButton(text="⬅️ Назад")])
 
         await message.answer(
@@ -3736,7 +3741,8 @@ async def handle_page_navigation(query: types.CallbackQuery):
                 link_preview_options=LinkPreviewOptions(is_disabled=True)
             )
 
-        await query.answer(f"📄 Страница {page_num + 1}/{len(pages)}")
+        # Убрали текст "Страница X/Y" при переключении
+        await query.answer()
 
     except Exception as e:
         print(f"[PAGES] Error: {e}")
