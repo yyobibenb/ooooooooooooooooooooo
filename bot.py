@@ -508,11 +508,10 @@ async def process_menu_management(message: types.Message, state: FSMContext):
         # Показываем интерфейс изменения порядка кнопок
         await show_reorder_interface(message, state)
     elif message.text.startswith("⚙️ "):
-        # Показываем меню управления конкретной кнопкой
-        label = message.text[2:]
+        # Показываем меню управления конкретной кнопкой (только удаление)
+        label = message.text[2:].strip()
         await state.update_data(selected_button_label=label)
         kb = [
-            [KeyboardButton(text="✏️ Переименовать")],
             [KeyboardButton(text="❌ Удалить")],
             [KeyboardButton(text="⬅️ Назад")]
         ]
@@ -535,22 +534,13 @@ async def process_button_action(message: types.Message, state: FSMContext):
     label = data.get('selected_button_label')
 
     if message.text == "❌ Удалить":
-        if await delete_keyboard_button(label):
+        # Удаляем кнопку
+        success = await delete_keyboard_button(label)
+        if success:
             await message.answer(f"✅ Кнопка '{label}' удалена.")
         else:
             await message.answer(f"❌ Ошибка при удалении кнопки '{label}'")
         return await manage_menu(message, state)
-
-    elif message.text == "✏️ Переименовать":
-        await state.set_state(AdminMenuStates.renaming_button)
-        await message.answer(
-            f"✏️ Переименование кнопки <b>{label}</b>\n\nВведите новое название:",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="⬅️ Отмена")]],
-                resize_keyboard=True
-            ),
-            parse_mode=ParseMode.HTML
-        )
 
 @router.message(AdminMenuStates.renaming_button)
 async def process_button_rename(message: types.Message, state: FSMContext):
