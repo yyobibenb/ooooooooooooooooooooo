@@ -4724,6 +4724,7 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
             msg_text = db_content.get('content', '')
             photo = db_content.get('photo_file_id')
             kb = None
+            inline_keyboard_list = []
 
             if db_content.get('buttons_json'):
                 print(f"[BOT_DEBUG_VERBOSE] Found inline buttons JSON: {db_content['buttons_json']}")
@@ -4761,31 +4762,35 @@ async def handle_dynamic_buttons(message: types.Message, state: FSMContext):
                     # Группируем кнопки с учётом индивидуальной ширины
                     inline_keyboard_list = group_buttons_by_row(button_objects, btns, default_buttons_per_row)
 
-                    # Если есть pages_json, показываем навигацию по страницам
-                    if db_content.get('pages_json'):
-                        try:
-                            pages = json.loads(db_content['pages_json'])
-                            if len(pages) > 1:
-                                # Добавляем кнопки навигации для первой страницы
-                                nav_buttons = create_page_navigation_buttons(btn_id, 0, len(pages))
-                                inline_keyboard_list.append(nav_buttons)
-                                print(f"[BOT_DEBUG_VERBOSE] Added page navigation: {len(pages)} pages")
-                        except Exception as e:
-                            print(f"[BOT_DEBUG_VERBOSE] Error adding page navigation: {e}")
-
-                    # Добавляем кнопку назад только если есть parent_id (не первый уровень)
-                    if db_content.get('parent_id'):
-                        parent_id = db_content['parent_id']
-                        print(f"[BOT_DEBUG_VERBOSE] Adding 'Back' button to parent: '{parent_id}'")
-                        inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=make_callback_data(parent_id))])
-                    else:
-                        print(f"[BOT_DEBUG_VERBOSE] No parent_id (first level menu), no back button needed")
-
-                    kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard_list)
                 except Exception as e:
                     print(f"[BOT_DEBUG_VERBOSE] ❌ ERROR parsing buttons_json: {e}")
             else:
-                print(f"[BOT_DEBUG_VERBOSE] No inline buttons (buttons_json is empty)")
+                print(f"[BOT_DEBUG_VERBOSE] No buttons_json (no inline buttons from buttons)")
+
+            # Проверяем pages_json независимо от buttons_json
+            if db_content.get('pages_json'):
+                try:
+                    pages = json.loads(db_content['pages_json'])
+                    if len(pages) > 1:
+                        # Добавляем кнопки навигации для первой страницы
+                        nav_buttons = create_page_navigation_buttons(btn_id, 0, len(pages))
+                        inline_keyboard_list.append(nav_buttons)
+                        print(f"[BOT_DEBUG_VERBOSE] Added page navigation: {len(pages)} pages")
+                except Exception as e:
+                    print(f"[BOT_DEBUG_VERBOSE] Error adding page navigation: {e}")
+
+            # Добавляем кнопку назад только если есть parent_id (не первый уровень)
+            if db_content.get('parent_id'):
+                parent_id = db_content['parent_id']
+                print(f"[BOT_DEBUG_VERBOSE] Adding 'Back' button to parent: '{parent_id}'")
+                inline_keyboard_list.append([InlineKeyboardButton(text="🔙 Назад", callback_data=make_callback_data(parent_id))])
+            else:
+                print(f"[BOT_DEBUG_VERBOSE] No parent_id (first level menu), no back button needed")
+
+            # Создаем клавиатуру только если есть кнопки
+            if inline_keyboard_list:
+                kb = InlineKeyboardMarkup(inline_keyboard=inline_keyboard_list)
+                print(f"[BOT_DEBUG_VERBOSE] Created keyboard with {len(inline_keyboard_list)} rows")
 
             if photo:
                 print(f"[BOT_DEBUG_VERBOSE] Sending Photo response (File ID: {photo[:15]}...)")
