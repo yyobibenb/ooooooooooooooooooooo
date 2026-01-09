@@ -1844,7 +1844,11 @@ async def content_editor_manage_pages(message: types.Message, state: FSMContext)
     # Формируем клавиатуру со списком страниц
     kb = []
     for i, page in enumerate(pages):
-        page_preview = page.get('text', '')[:50] + "..." if len(page.get('text', '')) > 50 else page.get('text', '')
+        # Убираем HTML теги из превью
+        import re
+        page_text = page.get('text', '')
+        clean_text = re.sub(r'<[^>]+>', '', page_text)
+        page_preview = clean_text[:50] + "..." if len(clean_text) > 50 else clean_text
         kb.append([KeyboardButton(text=f"📄 {i+1}. {page_preview}")])
 
     kb.append([KeyboardButton(text="➕ Добавить новую страницу")])
@@ -1890,15 +1894,28 @@ async def content_editor_select_page(message: types.Message, state: FSMContext):
         # Убираем пустые списки
         kb = [row for row in kb if row]
 
+        # Для превью оставляем HTML, но обрезаем аккуратно
+        # Telegram сам покажет форматированный текст
         text_preview = page_text[:500] + "..." if len(page_text) > 500 else page_text
 
-        await message.answer(
-            f"📄 <b>Страница {page_num + 1} из {len(pages)}</b>\n\n"
-            f"{text_preview}\n\n"
-            f"Выберите действие:",
-            reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
-            parse_mode=ParseMode.HTML
-        )
+        try:
+            await message.answer(
+                f"📄 <b>Страница {page_num + 1} из {len(pages)}</b>\n\n"
+                f"{text_preview}\n\n"
+                f"Выберите действие:",
+                reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as parse_error:
+            # Если ошибка парсинга HTML, отправляем без форматирования
+            import re
+            clean_preview = re.sub(r'<[^>]+>', '', text_preview)
+            await message.answer(
+                f"📄 Страница {page_num + 1} из {len(pages)}\n\n"
+                f"{clean_preview}\n\n"
+                f"Выберите действие:",
+                reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+            )
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
 
