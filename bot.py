@@ -2497,6 +2497,11 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
             await state.update_data(button_url=button_url, adding_new_button=True)
             await state.set_state(ContentEditorStates.waiting_button_width)
 
+            print(f"[URL_BUTTON_DEBUG] Adding new URL button:")
+            print(f"  button_text: {button_text}")
+            print(f"  button_url: {button_url}")
+            print(f"  button_label: {button_label}")
+
             kb = [
                 [KeyboardButton(text="1️⃣ На весь ряд (большая)")],
                 [KeyboardButton(text="2️⃣ По 2 в ряду")],
@@ -2693,13 +2698,19 @@ async def content_editor_button_width_received(message: types.Message, state: FS
         # Создаем новую кнопку с row_width
         if button_type == 'url':
             button_url = data.get('button_url')
+            print(f"[URL_BUTTON_DEBUG] Creating URL button:")
+            print(f"  button_text: {button_text}")
+            print(f"  button_url: {button_url}")
+            print(f"  row_width: {row_width}")
+            print(f"  button_label: {button_label}")
             new_button = {
                 'text': button_text,
                 'url': button_url,
                 'row_width': row_width
             }
             buttons.append(new_button)
-            print(f"[DEBUG] Добавляем URL кнопку: {new_button}")
+            print(f"[URL_BUTTON_DEBUG] Добавляем URL кнопку: {new_button}")
+            print(f"[URL_BUTTON_DEBUG] Всего кнопок после добавления: {len(buttons)}")
         else:  # menu
             submenu_id = data.get('submenu_id')
             submenu_content = data.get('submenu_content')
@@ -2723,7 +2734,7 @@ async def content_editor_button_width_received(message: types.Message, state: FS
 
         # Сохраняем обновленные кнопки родительского меню
         buttons_json = json.dumps(buttons)
-        print(f"[DEBUG] Сохраняем buttons_json: {buttons_json}")
+        print(f"[URL_BUTTON_DEBUG] Сохраняем buttons_json: {buttons_json}")
 
         success = await update_button_content(
             button_label,
@@ -2733,6 +2744,8 @@ async def content_editor_button_width_received(message: types.Message, state: FS
             db_content.get('parse_mode', 'HTML'),
             db_content.get('parent_id')
         )
+
+        print(f"[URL_BUTTON_DEBUG] update_button_content result: {success}")
 
         if success:
             width_text = {1: "на весь ряд", 2: "по 2 в ряду", 3: "по 3 в ряду", 4: "по 4 в ряду"}
