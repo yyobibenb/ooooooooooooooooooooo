@@ -2591,18 +2591,80 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
         )
 
         if success:
-            if selected_button:
-                await message.answer(f"✅ URL кнопки '{selected_button['text']}' изменен!")
-                await state.set_state(ContentEditorStates.selecting_menu)
-                fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
-                return await content_editor_select(fake_msg, state)
-            else:
-                await message.answer(f"✅ Кнопка-ссылка добавлена!")
+            await message.answer(f"✅ Кнопка-ссылка добавлена!")
+            await state.update_data(editing_button_label=button_label)
+            await state.set_state(ContentEditorStates.selecting_menu)
+
+            # Загружаем обновленное меню
+            db_content_updated = await get_button_content(button_label)
+            if db_content_updated:
+                current_text = db_content_updated.get('content', text_content)
+                has_photo = "✅" if db_content_updated.get('photo_file_id') else "❌"
+
+                # Собираем кнопки
+                all_buttons = []
+                if db_content_updated.get('buttons_json'):
+                    try:
+                        buttons_list = json.loads(db_content_updated['buttons_json'])
+                        for idx, btn in enumerate(buttons_list, 1):
+                            btn_text_item = btn.get('text', 'Кнопка')
+                            if btn.get('url'):
+                                all_buttons.append({
+                                    'index': idx,
+                                    'text': btn_text_item,
+                                    'type': '🔗 URL',
+                                    'source': 'db',
+                                    'url': btn['url']
+                                })
+                            else:
+                                submenu_id = btn.get('id', f"{button_label}:{btn_text_item}")
+                                all_buttons.append({
+                                    'index': idx,
+                                    'text': btn_text_item,
+                                    'type': '📄 меню',
+                                    'source': 'db',
+                                    'id': submenu_id
+                                })
+                    except:
+                        pass
+
+                await state.update_data(all_inline_buttons=all_buttons)
+
+                kb = [
+                    [KeyboardButton(text="📝 Изменить текст")],
+                    [KeyboardButton(text="🖼 Изменить фото")],
+                    [KeyboardButton(text="✏️ Переименовать кнопку")],
+                ]
+
+                if all_buttons:
+                    kb.append([KeyboardButton(text="📋 Инлайн-кнопки:")])
+                    for btn in all_buttons:
+                        btn_type_icon = "🔗" if btn['type'] == '🔗 URL' else "📄"
+                        kb.append([KeyboardButton(text=f"🔘 {btn_type_icon} {btn['text']}")])
+
+                kb.append([KeyboardButton(text="➕ Добавить инлайн-кнопку")])
+                if all_buttons:
+                    kb.append([KeyboardButton(text="⚙️ Расположение кнопок")])
+                kb.append([KeyboardButton(text="⬅️ Назад")])
+
+                import re
+                clean_text = re.sub(r'<[^>]+>', '', current_text)
+                text_preview = clean_text[:300] + "..." if len(clean_text) > 300 else clean_text
+
+                await message.answer(
+                    f"✏️ <b>Редактирование: {button_label}</b>\n\n"
+                    f"📄 <b>Текст:</b>\n{text_preview}\n\n"
+                    f"🖼 <b>Фото:</b> {has_photo}\n\n"
+                    f"💡 Нажмите на инлайн-кнопку для редактирования",
+                    reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+                    parse_mode=ParseMode.HTML
+                )
+            return
         else:
             await message.answer("❌ Ошибка при создании контента в БД")
-
-    await state.clear()
-    await admin_button(message, state)
+            await state.clear()
+            await admin_button(message, state)
+            return
 
 @router.message(ContentEditorStates.waiting_button_width)
 async def content_editor_button_width_received(message: types.Message, state: FSMContext):
@@ -2628,6 +2690,15 @@ async def content_editor_button_width_received(message: types.Message, state: FS
     data = await state.get_data()
     button_label = data.get('editing_button_label')
     editing_existing = data.get('editing_button_width', False)
+
+    print(f"[WIDTH_DEBUG] === content_editor_button_width_received ===")
+    print(f"[WIDTH_DEBUG] row_width: {row_width}")
+    print(f"[WIDTH_DEBUG] button_label: {button_label}")
+    print(f"[WIDTH_DEBUG] editing_existing: {editing_existing}")
+    print(f"[WIDTH_DEBUG] button_type: {data.get('button_type')}")
+    print(f"[WIDTH_DEBUG] button_text: {data.get('button_text')}")
+    print(f"[WIDTH_DEBUG] button_url: {data.get('button_url')}")
+    print(f"[WIDTH_DEBUG] adding_new_button: {data.get('adding_new_button')}")
 
     # Если изменяем существующую кнопку
     if editing_existing:
