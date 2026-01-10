@@ -2750,9 +2750,94 @@ async def content_editor_button_width_received(message: types.Message, state: FS
         if success:
             width_text = {1: "на весь ряд", 2: "по 2 в ряду", 3: "по 3 в ряду", 4: "по 4 в ряду"}
             await message.answer(f"✅ Кнопка '{button_text}' добавлена ({width_text[row_width]})!")
+
+            # Обновляем state с нужной кнопкой
+            await state.update_data(editing_button_label=button_label)
             await state.set_state(ContentEditorStates.selecting_menu)
-            fake_msg = message.model_copy(update={"text": f"📝 {button_label}"})
-            return await content_editor_select(fake_msg, state)
+
+            # Показываем обновленное меню редактирования напрямую
+            # Получаем контент из БД заново
+            db_content_updated = await get_button_content(button_label)
+            if db_content_updated:
+                current_text = db_content_updated.get('content', 'Нет текста')
+                has_photo = "✅" if db_content_updated.get('photo_file_id') else "❌"
+
+                # Собираем инлайн-кнопки
+                all_buttons = []
+                idx = 1
+                if db_content_updated.get('buttons_json'):
+                    try:
+                        buttons_list = json.loads(db_content_updated['buttons_json'])
+                        for btn in buttons_list:
+                            btn_text_item = btn.get('text', 'Кнопка')
+                            if btn.get('url'):
+                                all_buttons.append({
+                                    'index': idx,
+                                    'text': btn_text_item,
+                                    'type': '🔗 URL',
+                                    'source': 'db',
+                                    'url': btn['url']
+                                })
+                            else:
+                                submenu_id = btn.get('id', f"{button_label}:{btn_text_item}")
+                                all_buttons.append({
+                                    'index': idx,
+                                    'text': btn_text_item,
+                                    'type': '📄 меню',
+                                    'source': 'db',
+                                    'goto': f"db:{submenu_id}",
+                                    'id': submenu_id
+                                })
+                            idx += 1
+                    except:
+                        pass
+
+                await state.update_data(all_inline_buttons=all_buttons)
+
+                # Формируем клавиатуру
+                kb = [
+                    [KeyboardButton(text="📝 Изменить текст")],
+                    [KeyboardButton(text="🖼 Изменить фото")],
+                    [KeyboardButton(text="✏️ Переименовать кнопку")],
+                ]
+
+                # Добавляем управление страницами если есть
+                if db_content_updated.get('pages_json'):
+                    try:
+                        pages = json.loads(db_content_updated['pages_json'])
+                        if pages:
+                            kb.append([KeyboardButton(text=f"📄 Управление страницами ({len(pages)} стр.)")])
+                    except:
+                        pass
+
+                # Добавляем инлайн-кнопки
+                if all_buttons:
+                    kb.append([KeyboardButton(text="📋 Инлайн-кнопки:")])
+                    for btn in all_buttons:
+                        btn_type_icon = "🔗" if btn['type'] == '🔗 URL' else "📄"
+                        kb.append([KeyboardButton(text=f"🔘 {btn_type_icon} {btn['text']}")])
+
+                kb.append([KeyboardButton(text="➕ Добавить инлайн-кнопку")])
+
+                if all_buttons:
+                    kb.append([KeyboardButton(text="⚙️ Расположение кнопок")])
+
+                kb.append([KeyboardButton(text="⬅️ Назад")])
+
+                # Убираем HTML из превью
+                import re
+                clean_text = re.sub(r'<[^>]+>', '', current_text)
+                text_preview = clean_text[:300] + "..." if len(clean_text) > 300 else clean_text
+
+                await message.answer(
+                    f"✏️ <b>Редактирование: {button_label}</b>\n\n"
+                    f"📄 <b>Текст:</b>\n{text_preview}\n\n"
+                    f"🖼 <b>Фото:</b> {has_photo}\n\n"
+                    f"💡 Нажмите на инлайн-кнопку для редактирования",
+                    reply_markup=ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True),
+                    parse_mode=ParseMode.HTML
+                )
+                return
         else:
             await message.answer("❌ Ошибка при добавлении кнопки")
     else:
