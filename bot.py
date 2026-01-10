@@ -2210,7 +2210,8 @@ async def content_editor_add_inline_button_start(message: types.Message, state: 
 @router.message(ContentEditorStates.adding_inline_button, F.text == "🔗 Кнопка-ссылка (URL)")
 async def content_editor_add_url_button(message: types.Message, state: FSMContext):
     """Добавление кнопки-ссылки"""
-    await state.update_data(button_type='url')
+    # Очищаем selected_inline_button, чтобы не путать с редактированием
+    await state.update_data(button_type='url', selected_inline_button=None)
     await state.set_state(ContentEditorStates.waiting_button_text)
     await message.answer(
         "Введите текст для кнопки:",
@@ -2223,7 +2224,8 @@ async def content_editor_add_url_button(message: types.Message, state: FSMContex
 @router.message(ContentEditorStates.adding_inline_button, F.text == "📄 Кнопка-меню (submenu)")
 async def content_editor_add_menu_button(message: types.Message, state: FSMContext):
     """Добавление кнопки-меню"""
-    await state.update_data(button_type='menu')
+    # Очищаем selected_inline_button, чтобы не путать с редактированием
+    await state.update_data(button_type='menu', selected_inline_button=None)
     await state.set_state(ContentEditorStates.waiting_button_text)
     await message.answer(
         "Введите текст для кнопки:",
@@ -2423,6 +2425,13 @@ async def content_editor_button_url_received(message: types.Message, state: FSMC
     button_label = data.get('editing_button_label')
     selected_button = data.get('selected_inline_button')
     button_url = message.text
+
+    print(f"[URL_DEBUG] === content_editor_button_url_received ===")
+    print(f"[URL_DEBUG] button_label: {button_label}")
+    print(f"[URL_DEBUG] selected_button: {selected_button}")
+    print(f"[URL_DEBUG] button_url: {button_url}")
+    print(f"[URL_DEBUG] button_type: {data.get('button_type')}")
+    print(f"[URL_DEBUG] button_text: {data.get('button_text')}")
 
     # Добавляем https:// если не указано
     if not button_url.startswith('http'):
