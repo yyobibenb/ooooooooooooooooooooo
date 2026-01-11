@@ -190,6 +190,7 @@ class ButtonEditStates(StatesGroup):
 class ContentEditorStates(StatesGroup):
     selecting_menu = State()  # Выбор меню для редактирования
     editing_text = State()     # Редактирование текста
+    editing_photo = State()    # Редактирование фото
     editing_inline_buttons = State()  # Редактирование инлайн-кнопок
     adding_inline_button = State()    # Добавление новой инлайн-кнопки
     waiting_button_text = State()     # Ожидание текста кнопки
@@ -1418,6 +1419,40 @@ async def content_editor_edit_text_handler(message: types.Message, state: FSMCon
         parse_mode=ParseMode.HTML
     )
 
+@router.message(ContentEditorStates.selecting_menu, F.text == "🖼 Изменить фото")
+async def content_editor_edit_photo_handler(message: types.Message, state: FSMContext):
+    """Начало редактирования фото кнопки"""
+    data = await state.get_data()
+    button_label = data.get('editing_button_label', '')
+
+    # Получаем текущий контент из БД
+    db_content = await get_button_content(button_label)
+
+    await state.set_state(ContentEditorStates.editing_photo)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🗑 Удалить фото")],
+            [KeyboardButton(text="⬅️ Отмена")]
+        ],
+        resize_keyboard=True
+    )
+
+    # Проверяем есть ли текущее фото
+    current_photo_id = db_content.get('photo_file_id') if db_content else None
+    if current_photo_id:
+        await message.answer_photo(
+            photo=current_photo_id,
+            caption=f"📸 <b>Текущее фото для '{button_label}'</b>\n\nОтправьте новое фото или нажмите '🗑 Удалить фото'",
+            reply_markup=kb,
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await message.answer(
+            f"📸 <b>Изменение фото для '{button_label}'</b>\n\nОтправьте фото",
+            reply_markup=kb,
+            parse_mode=ParseMode.HTML
+        )
+
 @router.message(ContentEditorStates.selecting_menu, F.text.startswith("📝 "))
 async def content_editor_select(message: types.Message, state: FSMContext):
     """Обработка выбора кнопки для редактирования"""
@@ -1704,6 +1739,90 @@ async def content_editor_save_text(message: types.Message, state: FSMContext):
 
     await state.clear()
     await admin_button(message, state)
+
+@router.message(ContentEditorStates.editing_photo)
+async def content_editor_save_photo(message: types.Message, state: FSMContext):
+    """Сохранение/удаление фото кнопки"""
+    if message.text == "⬅️ Отмена":
+        await state.clear()
+        return await content_editor_start(message, state)
+
+    data = await state.get_data()
+    editing_submenu_id = data.get('editing_submenu_id')
+    button_label = data.get('editing_button_label')
+
+    # Определяем какую кнопку редактируем
+    target_id = editing_submenu_id if editing_submenu_id else button_label
+
+    # Получаем текущий контент
+    db_content = await get_button_content(target_id)
+
+    if message.text == "🗑 Удалить фото":
+        # Удаляем фото
+        if db_content:
+            success = await update_button_content(
+                target_id,
+                db_content.get('content', ''),
+                None,  # Удаляем фото
+                db_content.get('buttons_json'),
+                db_content.get('parse_mode', 'HTML'),
+                db_content.get('parent_id'),
+                db_content.get('buttons_per_row'),
+                db_content.get('pages_json')
+            )
+            if success:
+                await message.answer("✅ Фото удалено!")
+            else:
+                await message.answer("❌ Ошибка при удалении фото")
+        else:
+            await message.answer("❌ Контент не найден")
+
+        await state.clear()
+        return await admin_button(message, state)
+
+    if message.photo:
+        # Сохраняем новое фото
+        photo = message.photo[-1]
+        photo_file_id = photo.file_id
+
+        if db_content:
+            # Контент существует - обновляем фото
+            success = await update_button_content(
+                target_id,
+                db_content.get('content', ''),
+                photo_file_id,
+                db_content.get('buttons_json'),
+                db_content.get('parse_mode', 'HTML'),
+                db_content.get('parent_id'),
+                db_content.get('buttons_per_row'),
+                db_content.get('pages_json')
+            )
+        else:
+            # Контента нет - создаём с пустым текстом и фото
+            parent_id = button_label if editing_submenu_id else None
+            success = await update_button_content(
+                target_id,
+                '<i>Текст не задан. Нажмите "📝 Изменить текст" чтобы добавить.</i>',
+                photo_file_id,
+                None,
+                'HTML',
+                parent_id
+            )
+
+        if success:
+            await message.answer("✅ Фото успешно обновлено!")
+        else:
+            await message.answer("❌ Ошибка при обновлении фото")
+
+        await state.clear()
+        return await admin_button(message, state)
+
+    # Если пришло что-то другое
+    await message.answer(
+        "❌ Пожалуйста, отправьте фото или нажмите кнопку\n\n"
+        "🗑 Удалить фото - для удаления\n"
+        "⬅️ Отмена - для возврата"
+    )
 
 @router.message(ContentEditorStates.selecting_menu, F.text == "✏️ Переименовать кнопку")
 async def content_editor_rename_keyboard_button_start(message: types.Message, state: FSMContext):
